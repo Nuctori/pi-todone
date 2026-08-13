@@ -1,7 +1,7 @@
 /**
- * pi-todone — todo 完成义务闸 + 证明点协议
+ * pi-todone — todo 完成义务闸 + 证明点协议 + 创建义务
  *
- * 两道闸，全部挂在 pi 生命周期 hook 上，插件只做确定性格式校验：
+ * 三道闸，全部挂在 pi 生命周期 hook 上，插件只做确定性格式校验：
  *
  * 1. 格式闸（tool_call）：todo 标 completed 必须附 metadata.evidence（JSON，格式校验），
  *    不合规 → block 并附 reason，AI 必须补证才能 done。
@@ -9,6 +9,10 @@
  *
  * 2. 证明点协议（agent_end）：agent 空闲时有 pending todo → 注入"证明本轮进展 | 说明卡点 | 继续"；
  *    已放行的完成项 → 注入"请 spawn fresh reviewer 独立验证"（一次）。
+ *
+ * 3. 创建义务（agent_end + before_agent_start）：
+ *    - 常驻：promptGuidelines 追加静态义务摘要（L1，编译期常量，严禁动态内容——破缓存前缀）
+ *    - 事后：本单元工具调用 ≥5 且未拆 todo 且无 todo 列表 → 注入"请先拆 todo"（粒度规范）
  *
  * 防循环：停滞检测（计数无进展 N 轮 → 改发卡点报告）、指数退避、同文本去重、
  *         用户最近交互时静默（不打扰正常对话）。
@@ -19,6 +23,7 @@
  *   PI_TODONE_COOLDOWN_MAX_MS   退避上限 ms（默认 600_000）
  *   PI_TODONE_SEMANTIC_CHECK    完成项是否注入验证义务 0/1（默认 1）
  *   PI_TODONE_QUIET_AFTER_MS    最近用户消息距今小于此值则不注入 ms（默认 120_000）
+ *   PI_TODONE_CREATE_THRESHOLD  本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务（默认 5）
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -47,6 +52,7 @@ interface SessionEntry {
 		role?: string;
 		toolName?: string;
 		details?: unknown;
+		content?: unknown;
 	};
 }
 
@@ -56,6 +62,7 @@ const CFG = {
 	cooldownMaxMs: Number(process.env.PI_TODONE_COOLDOWN_MAX_MS ?? 600_000),
 	semanticCheck: (process.env.PI_TODONE_SEMANTIC_CHECK ?? "1") === "1",
 	quietAfterMs: Number(process.env.PI_TODONE_QUIET_AFTER_MS ?? 120_000),
+	createThreshold: Number(process.env.PI_TODONE_CREATE_THRESHOLD ?? 5),
 };
 
 /** 格式闸核心：校验 evidence，合规返回 null，否则返回缺什么。纯函数，可单测。 */
@@ -100,6 +107,10 @@ const EVIDENCE_GUIDE = `todo 标 completed 必须附 metadata.evidence（JSON）
   {"kind":"runnable","evidence":[{"type":"cmd","cmd":"npm test","exit":0}]}
   {"kind":"effect","evidence":[]}   ← 不可硬验证，仅声明，留人工验收`;
 
+/** L1 常驻义务摘要：编译期常量，严禁任何动态内容（字节变化会破 system prompt 缓存前缀）。 */
+const TODO_DUTY_LINE =
+	"Todo 义务（pi-todone）：复杂任务（多文件/3+ 步骤/长任务）开始前先拆 todo，每项是一个可独立验证的结果（≤ 一句话）；小任务（单文件小改/问答）无需列。标 todo completed 必须附 metadata.evidence（state→file 证据 / runnable→cmd 证据 / effect 留人工验收）；详见 pi-todone skill。";
+
 /** 扫描会话分支，返回最新 todo 工具结果快照（todo-enforcer 同款模式，纯读）。 */
 export function scanTodoSnapshot(branch: SessionEntry[]): { tasks: TodoTask[] } | null {
 	let latest: { tasks: TodoTask[] } | null = null;
@@ -116,6 +127,52 @@ export function scanTodoSnapshot(branch: SessionEntry[]): { tasks: TodoTask[] } 
 		}
 	}
 	return latest;
+}
+
+/** 统计本单元（最近 user 消息之后）的工具调用、todo 调用与 todo 创建。纯函数，可单测。 */
+export function unitToolStats(branch: SessionEntry[]): {
+	toolCalls: number;
+	todoCalls: number;
+	createdTodo: boolean;
+} {
+	let lastUser = -1;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type !== "message" || !entry.message) continue;
+		if (entry.message.role === "user") {
+			lastUser = i;
+			break;
+		}
+	}
+	let toolCalls = 0;
+	let todoCalls = 0;
+	let createdTodo = false;
+	for (let i = lastUser + 1; i < branch.length; i++) {
+		const entry = branch[i];
+		if (entry.type !== "message" || !entry.message) continue;
+		const msg = entry.message;
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+		for (const c of msg.content as Array<Record<string, unknown>>) {
+			if (!c || c.type !== "toolCall") continue;
+			toolCalls++;
+			if (c.name !== "todo") continue;
+			todoCalls++;
+			if (createdTodo) continue;
+			const raw = c.arguments;
+			let args: Record<string, unknown> | null = null;
+			if (typeof raw === "string") {
+				try {
+					args = JSON.parse(raw) as Record<string, unknown>;
+				} catch {
+					args = null;
+				}
+			} else if (raw && typeof raw === "object") {
+				args = raw as Record<string, unknown>;
+			}
+			if (args && args.action === "create") createdTodo = true;
+		}
+	}
+	return { toolCalls, todoCalls, createdTodo };
 }
 
 /** 最新一条 user 消息时间戳（用于交互静默），无则返回 0。 */
@@ -140,6 +197,20 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 	let stagnantRounds = 0;
 	const pendingVerify = new Set<number>(); // 已放行但未语义验证的任务 id
 
+	// ── L1：常驻义务（before_agent_start，纯静态，幂等）──
+	pi.on("before_agent_start", (event) => {
+		const opts = event.systemPromptOptions;
+		if (!opts) return;
+		const lines = opts.promptGuidelines ?? [];
+		if (lines.includes(TODO_DUTY_LINE)) return; // 幂等：不重复追加
+		return {
+			systemPromptOptions: {
+				...opts,
+				promptGuidelines: [...lines, TODO_DUTY_LINE],
+			},
+		};
+	});
+
 	// ── 闸 1：格式闸（tool_call，可 block）──
 	pi.on("tool_call", (event) => {
 		if (event.toolName !== "todo") return;
@@ -156,14 +227,12 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		return;
 	});
 
-	// ── 闸 2：证明点协议（agent_end）──
+	// ── 闸 2+3：证明点协议 + 创建义务（agent_end）──
 	pi.on("agent_end", async (_event, ctx) => {
 		const branch = ctx.sessionManager?.getBranch?.();
 		if (!Array.isArray(branch)) return;
 		const snapshot = scanTodoSnapshot(branch);
-		if (!snapshot) return;
-
-		const tasks = snapshot.tasks.filter((t) => t.status !== "deleted");
+		const tasks = snapshot ? snapshot.tasks.filter((t) => t.status !== "deleted") : [];
 		const incomplete = tasks.filter((t) => t.status === "pending" || t.status === "in_progress");
 
 		// 停滞检测
@@ -179,8 +248,20 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		if (now - lastInjectionAt < cooldown) return;
 		if (now - lastUserMessageAt(branch) < CFG.quietAfterMs) return; // 用户在交互，不打扰
 
+		const stats = unitToolStats(branch);
 		let text: string | null = null;
-		if (stagnantRounds >= CFG.stallThreshold) {
+		if (
+			stats.toolCalls >= CFG.createThreshold &&
+			!stats.createdTodo &&
+			stats.todoCalls === 0 &&
+			tasks.length === 0
+		) {
+			// 创建义务：任务复杂但完全没拆 todo
+			text = `${PKG}: 本单元已使用 ${stats.toolCalls} 次工具但未拆 todo——任务比你预期的复杂。请先拆 todo 再继续：
+- 粒度：每项是一个可独立验证的结果（≤ 一句话），如"加 idempotency key 去重 + 回归测试"
+- 禁止"实现 X 模块"这类不可验证的粗任务
+（小任务豁免——若你认为这是小任务，回复一句原因即可继续）`;
+		} else if (stagnantRounds >= CFG.stallThreshold) {
 			// 停滞 → 卡点报告（中间态交付），重置注入节奏
 			injectionStreak = 0;
 			text = `${PKG}: 已连续 ${stagnantRounds} 轮无进展（todo 计数未变）。请交付中间态证明：

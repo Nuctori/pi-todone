@@ -3,7 +3,7 @@
  * 运行：node --experimental-strip-types src/demo.ts （Node >= 22.6）
  * 非零退出码 = 有断言失败。
  */
-import { validateEvidence, scanTodoSnapshot } from "./index.ts";
+import { validateEvidence, scanTodoSnapshot, unitToolStats } from "./index.ts";
 
 let failed = 0;
 function check(name: string, actual: unknown, expect: unknown) {
@@ -44,6 +44,47 @@ const snap = scanTodoSnapshot(branch as never);
 check("快照取最新", snap?.tasks?.[0]?.subject, "新");
 check("快照嵌套 details", snap?.tasks?.[0]?.status, "in_progress");
 check("无 todo 返回 null", scanTodoSnapshot([{ type: "message", message: { role: "toolResult", toolName: "bash", details: {} } }] as never), null);
+
+// ── unitToolStats ──
+const unitBranch = [
+	{ type: "message", message: { role: "user", content: [{ type: "text", text: "做 X" }] } },
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [
+				{ type: "toolCall", name: "ctx_grep", arguments: '{"pattern":"x"}' },
+				{ type: "toolCall", name: "todo", arguments: '{"action":"create","subject":"任务A"}' },
+				{ type: "toolCall", name: "todo", arguments: { action: "update", id: 1, status: "in_progress" } },
+			],
+		},
+	},
+	{ type: "message", message: { role: "toolResult", toolName: "ctx_grep", details: {} } },
+];
+const st = unitToolStats(unitBranch as never);
+check("单元工具计数", st.toolCalls, 3);
+check("单元 todo 调用", st.todoCalls, 2);
+check("单元创建过 todo", st.createdTodo, true);
+
+const noTodoBranch = [
+	{ type: "message", message: { role: "user", content: "做 Y" } },
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [
+				{ type: "toolCall", name: "ctx_read", arguments: "{}" },
+				{ type: "toolCall", name: "ctx_read", arguments: "{}" },
+				{ type: "toolCall", name: "ctx_read", arguments: "{}" },
+			],
+		},
+	},
+];
+const st2 = unitToolStats(noTodoBranch as never);
+check("无 todo 单元计数", st2.toolCalls, 3);
+check("无 todo 单元 todoCalls", st2.todoCalls, 0);
+check("无 todo 单元未创建", st2.createdTodo, false);
+check("无 user 空分支", unitToolStats([] as never).toolCalls, 0);
 
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);
