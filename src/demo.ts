@@ -3,7 +3,7 @@
  * 运行：node --experimental-strip-types src/demo.ts （Node >= 22.6）
  * 非零退出码 = 有断言失败。
  */
-import { validateEvidence, normalizeEvidence, scanTodoSnapshot, unitToolStats } from "./index.ts";
+import { validateEvidence, normalizeEvidence, scanTodoSnapshot, unitToolStats, validateParentRef, canCompleteTree } from "./index.ts";
 
 let failed = 0;
 function check(name: string, actual: unknown, expect: unknown) {
@@ -106,6 +106,48 @@ check("非法 kind 仍拦截", n6.error, "kind 必须是 state|runnable|effect�
 const n7 = normalizeEvidence({ evidence: "not-array" });
 check("evidence 非数组拦截", n7.error, "evidence.evidence 必须是数组");
 check("归一化后写回格式合法", validateEvidence(n2.evidence), null);
+
+// ── validateParentRef ──
+const treeTasks = [
+	{ id: 1, subject: "目标", status: "completed" },
+	{ id: 2, subject: "子1", status: "completed", metadata: { parentId: 1 } },
+	{ id: 3, subject: "子2", status: "pending", metadata: { parentId: 1 } },
+	{ id: 4, subject: "孤儿", status: "pending", metadata: { parentId: 99 } },
+];
+check("parentRef 根节点放行", validateParentRef(treeTasks, undefined), null);
+check("parentRef 存在放行", validateParentRef(treeTasks, 1), null);
+check("parentRef 不存在拦截", validateParentRef(treeTasks, 99), "parentId 引用的任务 #99 不存在");
+check("parentRef 非数字拦截", validateParentRef(treeTasks, "1"), "parentId 必须是数字，实际: 1");
+
+// ── canCompleteTree ──
+check("无子节点放行", canCompleteTree(treeTasks, 4), null);
+check("子全完成放行", canCompleteTree(
+	[{ id: 1, subject: "父", status: "in_progress" }, { id: 2, subject: "子", status: "completed", metadata: { parentId: 1 } }],
+	1,
+), null);
+check("子未完成拦截", canCompleteTree(
+	[{ id: 5, subject: "父", status: "in_progress" }, { id: 6, subject: "子", status: "pending", metadata: { parentId: 5 } }],
+	5,
+), "子任务 #6 子 未完成，父任务不能宣告 completed");
+check("deleted 子跳过", canCompleteTree(
+	[{ id: 7, subject: "父", status: "in_progress" }, { id: 8, subject: "弃", status: "deleted", metadata: { parentId: 7 } }],
+	7,
+), null);
+
+// ── unitToolStats hasLongWait ──
+const waitBranch = [
+	{ type: "message", message: { role: "user", content: "干活" } },
+	{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "subagent", arguments: "{}" }] } },
+	{ type: "message", message: { role: "toolResult", toolName: "subagent", details: {} } },
+	{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "shell", arguments: '{"timeout": 120}' }] } },
+];
+const sw = unitToolStats(waitBranch as never);
+check("subagent 触发长等待", sw.hasLongWait, true);
+const waitBranch2 = [
+	{ type: "message", message: { role: "user", content: "干活" } },
+	{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "shell", arguments: '{"timeout": 10}' }] } },
+];
+check("短命令不触发长等待", unitToolStats(waitBranch2 as never).hasLongWait, false);
 
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);
