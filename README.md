@@ -1,28 +1,61 @@
 # pi-todone
 
-todo 完成义务闸 + 证明点协议 + 创建义务。针对 AI 长自主任务偷懒（提前停、空转、随便 done、不拆任务）的最小干预：
+todo 完成义务闸 + 证明点协议。针对 AI 长自主任务偷懒（提前停、空转、随便 done、不拆任务）的最小干预。
 
 - **格式闸**：`todo` 标 `completed` 必须附 `metadata.evidence`（JSON），格式不合规 → **block**，AI 必须补证才能 done
-- **证明点协议**：agent 空闲且有 pending todo → 注入"证明本轮进展 | 说明卡点 | 继续"；连续无进展 → 改发卡点报告（中间态交付）
+- **证明点协议**：agent 空闲且有 pending todo → 注入"证明本轮进展 | 说明卡点 | 继续"；连续无进展 → 触发重新审视（卡点报告）
 - **创建义务**：复杂任务（本单元 ≥5 次工具调用）但完全没拆 todo → 注入"请先拆 todo"（带粒度规范）；小任务豁免
 - **验证义务**：格式合规的完成项 → 注入"请 spawn fresh reviewer 独立验证"，由 subagent 系 LLM 做语义判断
 
-插件只做确定性格式校验（零 LLM 成本、永不幻觉）。语义验证 → 独立 subagent（防共谋，dag-core 同款模式）。
+插件只做**确定性格式校验**（零 LLM 成本、永不幻觉）。语义验证 → 独立 subagent（防共谋）。
+
+## 设计哲学
+
+### 一个工具做一件事
+
+pi-todone 的语义边界只有一条：**todo 的完成义务**。围绕 todo 的其他职责刻意留在外面：
+
+| 职责 | 语义 | 归属 |
+|---|---|---|
+| 完成义务（evidence 格式、空闲注入、停滞检测） | 机械、可判定 | **本插件**（硬闸） |
+| 结构规范（结果导向、依赖显式、卡点重规划） | 语义、不可判定 | **pi-todone skill**（规范层，AI 自觉） |
+| 目标理解（用户要什么、什么算达成） | 语义、需要决策链 | **决策审计层**（如 pi-pair decision-auditor） |
+
+边界原则：**能强制的做进工具，不能强制的放规范层，语义理解留给 AI 与审计**。把不可判定的结构/目标规则做成"门禁"是伪门禁——启发式必误报，真判定要 LLM（那就不是插件，是又一个审计 agent）。
+
+### 证明义务在 AI 侧（burden of proof）
+
+- 插件**不验证真实性，只校验格式**：AI 必须提交证明才能 done，证明内容（path/cmd）由 AI 自己负责
+- 格式闸拦不住"格式合规的假证据"——语义真实性靠独立 subagent 验证（fresh context 隔离，防同模型共谋）
+- **宽容归一化**：模型构造嵌套 JSON 参数能力弱，常见偏差（单对象、字符串、缺 kind、裸命令）自动修复；只有完全无法归一化才 block。教学循环不该退化成试错循环
+
+### 缓存安全
+
+- L1 常驻义务注入是**编译期常量**：字节稳定 → system prompt 缓存命中（cacheRead），每轮成本 ≈ 0.1×
+- 动态内容（任务 id、计数、时间）一律走消息通道（`sendUserMessage`），**永不碰 system prompt**——任何动态注入都会破坏缓存前缀
+
+### 小任务豁免
+
+完成义务只对"已创建的 todo"生效；创建义务只对复杂任务触发。避免两个极端：不列（数据：flash 仅 8% 单元用 todo）与噪音（每个小活都列）。
+
+### 诚实边界
+
+- todo 状态是 AI 自报的——本插件管"完成义务"，管不了"todo 之外的漏做"（那是声称审计的事）
+- `effect` 类是**诚实出口**：block 它没意义（模型会改编 state 证据更糟），给一条不编造的路径反而对
+- 卡点检测是"触发"不是"教学"：停滞时要求 AI 重新审视结构，怎么重规划在 skill
 
 ## 三层知识架构（缓存安全）
 
 | 层 | 通道 | 内容 | 缓存影响 |
 |---|---|---|---|
-| L1 常驻 | `before_agent_start` → `promptGuidelines` 追加**编译期常量** | 2 行义务摘要 | ✅ 静态字节 → system prompt 缓存命中（cacheRead） |
-| L2 按需 | `~/.agents/skills/pi-todone/SKILL.md` | 完整规则：粒度判定、evidence 格式、验证流程 | ✅ 不触发不加载 |
+| L1 常驻 | `before_agent_start` → `promptGuidelines` 追加**编译期常量** | 2 行义务摘要 | ✅ 静态字节 → 缓存命中 |
+| L2 按需 | `~/.agents/skills/pi-todone/SKILL.md` | 完整规则：粒度判定、evidence 格式、结构三原则、验证流程 | ✅ 不触发不加载 |
 | L3 强制 | block reason + agent_end 注入（sendUserMessage） | 违规时现场教 | ✅ 走消息通道，不碰 system prompt |
-
-**铁律：L1 注入文本必须是编译期常量**——任何动态内容（时间戳/计数/状态）都会破坏 system prompt 缓存前缀，导致整段每轮重算。
 
 ## 安装
 
 ```bash
-pi install D:\node\pi-todone   # 或发布后 pi install npm:pi-todone
+pi install npm:pi-todone
 ```
 
 ## 证明格式
@@ -41,9 +74,11 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 | `runnable` | "测试通过/构建成功" | ≥1 条 cmd 证据（cmd 必填，exit 可选数字） |
 | `effect` | "性能提升/更清晰" | 不拦截，留人工验收 |
 
+常见偏差自动归一化：evidence 单对象、字符串 JSON、缺 kind（按条目推断）、裸命令文本、条目缺 type。只有完全无法归一化才 block（reason 含完整格式）。
+
 ## 防循环
 
-- 停滞检测：todo 计数连续 N 轮不变（默认 3）→ 停止"继续"催促，改发卡点报告
+- 停滞检测：todo 计数连续 N 轮不变（默认 3）→ 注入重新审视（**终态通知**，之后静默等用户介入或进展，不重复催促）
 - 指数退避：注入间隔 60s ×2ⁿ，上限 10min
 - 同文本去重：相同注入不重复
 - 交互静默：最近 2 分钟有用户消息时不注入（不打扰正常对话）
@@ -53,15 +88,19 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 
 | 变量 | 默认 | 含义 |
 |---|---|---|
-| `PI_TODONE_STALL_THRESHOLD` | 3 | 停滞几轮转卡点报告（通知后静默等用户/进展，不重复催促） |
+| `PI_TODONE_STALL_THRESHOLD` | 3 | 停滞几轮触发重新审视 |
 | `PI_TODONE_QUIET_AFTER_MS` | 120000 | 最近用户消息静默窗口 |
 | `PI_TODONE_CREATE_THRESHOLD` | 5 | 本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务 |
 
-## 自检
+退避算法与验证义务开关是写死常量（不需要旋钮；要关改代码）。
+
+## 测试
 
 ```bash
-npm test   # node --experimental-strip-types src/demo.ts（25 断言）
+npm test    # demo 自检（36 断言）+ mock E2E（6 场景 15 断言，无模型依赖）
 ```
+
+CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。
 
 ## 设计边界（诚实说明）
 
@@ -69,3 +108,8 @@ npm test   # node --experimental-strip-types src/demo.ts（25 断言）
 - 插件不能程序化调用 subagent 工具（pi 扩展 API 限制），验证义务通过注入交给主 agent spawn
 - todo 状态是 AI 自报的——本插件管"完成义务"，管不了"todo 之外的漏做"，那是声称审计的事
 - 创建义务只对"完全没拆过 todo 的复杂单元"注入；列了粗粒度 todo 的情况由 skill 粒度规范纠正（插件不判语义）
+- 结构规范（结果导向/依赖/重规划）在 skill 层，不在插件——见设计哲学"一个工具做一件事"
+
+## License
+
+MIT

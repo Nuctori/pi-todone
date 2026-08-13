@@ -1,0 +1,115 @@
+# pi-todone
+
+Todo completion duty gate + proof-point protocol. Minimal intervention against AI laziness in long autonomous tasks (early stop, idling, marking things done without doing them, skipping task breakdown).
+
+- **Format gate**: marking a `todo` `completed` requires `metadata.evidence` (JSON). Non-conforming → **blocked**, the AI must supply proof before `done`.
+- **Proof-point protocol**: when the agent idles with pending todos → inject "prove this round's progress | explain the blocker | continue"; on prolonged stagnation → trigger re-examination (blocker report).
+- **Creation duty**: complex units (≥5 tool calls) that never created any todo → inject "break down todos first" (with granularity rules); small tasks exempt.
+- **Verification duty**: format-valid completions → inject "spawn a fresh reviewer subagent" for semantic verification by the subagent family of LLMs.
+
+The plugin performs **deterministic format validation only** (zero LLM cost, never hallucinates). Semantic verification → independent subagents (collusion-resistant).
+
+## Design Philosophy
+
+### One tool, one job
+
+pi-todone's semantic boundary is a single one: **the completion duty of todos**. Everything else around todos is deliberately left outside:
+
+| Responsibility | Semantics | Where it lives |
+|---|---|---|
+| Completion duty (evidence format, idle injection, stagnation detection) | mechanical, decidable | **this plugin** (hard gate) |
+| Structure norms (result-oriented, explicit dependencies, re-plan on blockers) | semantic, undecidable | **pi-todone skill** (norm layer, AI follows voluntarily) |
+| Goal understanding (what the user wants, what counts as done) | semantic, needs decision chain | **decision-audit layer** (e.g. pi-pair decision-auditor) |
+
+Boundary principle: **what can be enforced goes into the tool; what cannot be enforced goes into the norm layer; semantic understanding stays with the AI and auditors.** Turning undecidable structure/goal rules into a "gate" is a fake gate — heuristics will misfire, and true judgment needs an LLM (which makes it an auditor, not a plugin).
+
+### Burden of proof on the AI side
+
+- The plugin **does not verify truthfulness, only format**: the AI must submit proof before `done`, and the proof content (path/cmd) is the AI's own responsibility.
+- The format gate cannot stop "format-valid fake evidence" — semantic truth is checked by independent subagents (fresh-context isolation, against same-model collusion).
+- **Lenient normalization**: models are weak at constructing nested JSON args; common deviations (single object, string, missing kind, bare command) are auto-fixed; only un-normalizable input is blocked. A teaching loop must not degrade into a trial-and-error loop.
+
+### Cache safety
+
+- The L1 persistent duty injection is a **compile-time constant**: stable bytes → system-prompt cache hits (cacheRead), ~0.1× cost per turn.
+- Dynamic content (task ids, counts, timestamps) goes through the message channel (`sendUserMessage`) **only, never touching the system prompt** — any dynamic injection breaks the cache prefix.
+
+### Small-task exemption
+
+The completion duty applies only to todos that exist; the creation duty triggers only for complex tasks. This avoids both extremes: never using todos (data: flash used todos in only 8% of units) and noise (todos for every tiny task).
+
+### Honest boundaries
+
+- Todo state is AI self-reported — this plugin enforces the completion duty, not "work done outside todos" (that is claim-audit territory).
+- The `effect` kind is an **honest exit**: blocking it is pointless (the model would fabricate a `state` proof instead); giving it a non-fabricating path is better.
+- Stagnation detection is a *trigger*, not *teaching*: on stall the AI is asked to re-examine the todo structure; how to re-plan lives in the skill.
+
+## Three-layer knowledge architecture (cache-safe)
+
+| Layer | Channel | Content | Cache impact |
+|---|---|---|---|
+| L1 persistent | `before_agent_start` → `promptGuidelines` append of a **compile-time constant** | 2-line duty summary | ✅ static bytes → cache hit |
+| L2 on-demand | `~/.agents/skills/pi-todone/SKILL.md` | full rules: granularity, evidence format, structure norms, verification flow | ✅ not loaded until triggered |
+| L3 enforcement | block reason + agent_end injection (`sendUserMessage`) | teaches the format on violation | ✅ message channel, never touches system prompt |
+
+## Install
+
+```bash
+pi install npm:pi-todone
+```
+
+## Proof format
+
+When marking a todo `completed`, submit `metadata.evidence`:
+
+```json
+{ "kind": "state",    "evidence": [{"type": "file", "path": "src/a.ts", "op": "edit"}] }
+{ "kind": "runnable", "evidence": [{"type": "cmd",  "cmd": "npm test", "exit": 0}] }
+{ "kind": "effect",   "evidence": [] }
+```
+
+| kind | Meaning | Gate rule |
+|---|---|---|
+| `state` | "file changed" | ≥1 file evidence (path required, op ∈ write/edit/delete) |
+| `runnable` | "tests/build pass" | ≥1 cmd evidence (cmd required, exit optional number) |
+| `effect` | subjective ("faster", "cleaner") | not blocked; left for human acceptance |
+
+Common deviations are auto-normalized: evidence as single object, string JSON, missing kind (inferred from entries), bare command text, entries missing `type`. Only un-normalizable input is blocked (reason carries the full format).
+
+## Loop protection
+
+- Stagnation detection: todo count unchanged for N rounds (default 3) → inject re-examination (**terminal notice**; then silent until user intervention or progress — no repeated nagging)
+- Exponential backoff: injection interval 60s ×2ⁿ, capped at 10 min
+- Same-text dedup: identical injections are not repeated
+- Interaction silence: no injection within 2 minutes of the latest user message (never interrupt a live conversation)
+- Idempotent injection: identical promptGuidelines line is not appended twice
+
+## Configuration (env vars)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PI_TODONE_STALL_THRESHOLD` | 3 | rounds of no progress before re-examination trigger |
+| `PI_TODONE_QUIET_AFTER_MS` | 120000 | silence window after latest user message |
+| `PI_TODONE_CREATE_THRESHOLD` | 5 | tool calls in unit without any todo → creation-duty injection |
+
+Backoff constants and the verification-duty switch are hard-coded (no knobs; edit source to change).
+
+## Tests
+
+```bash
+npm test    # demo self-check (36 assertions) + mock E2E (6 scenarios, 15 assertions, no model needed)
+```
+
+CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.
+
+## Honest limitations
+
+- The format gate cannot stop "format-valid fake evidence" — semantic truth relies on subagent verification; that is why the layers exist.
+- The plugin cannot programmatically invoke subagent tools (pi extension API limit); the verification duty is injected for the main agent to spawn.
+- Todo state is AI self-reported — this plugin enforces the completion duty, not work outside todos (claim-audit territory).
+- The creation duty targets units that never created any todo; coarse-grained todo lists are corrected by the skill's granularity norms (the plugin does not judge semantics).
+- Structure norms (result-oriented / dependencies / re-planning) live in the skill layer, not the plugin — see "One tool, one job".
+
+## License
+
+MIT
