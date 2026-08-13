@@ -17,13 +17,11 @@
  * 防循环：停滞检测（计数无进展 N 轮 → 改发卡点报告）、指数退避、同文本去重、
  *         用户最近交互时静默（不打扰正常对话）。
  *
- * 配置（环境变量）：
+ * 配置（环境变量，只有真正会调的 3 个）：
  *   PI_TODONE_STALL_THRESHOLD   停滞几轮转卡点报告（默认 3）
- *   PI_TODONE_COOLDOWN_BASE_MS  注入退避基数 ms（默认 60_000，×2^n）
- *   PI_TODONE_COOLDOWN_MAX_MS   退避上限 ms（默认 600_000）
- *   PI_TODONE_SEMANTIC_CHECK    完成项是否注入验证义务 0/1（默认 1）
  *   PI_TODONE_QUIET_AFTER_MS    最近用户消息距今小于此值则不注入 ms（默认 120_000）
  *   PI_TODONE_CREATE_THRESHOLD  本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务（默认 5）
+ * 退避（60s×2ⁿ 上限 10min）与验证义务开关（SEMANTIC_CHECK）是写死常量，不需要旋钮。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -59,11 +57,11 @@ interface SessionEntry {
 const CFG = {
 	stallThreshold: Number(process.env.PI_TODONE_STALL_THRESHOLD ?? 3),
 	cooldownBaseMs: Number(process.env.PI_TODONE_COOLDOWN_BASE_MS ?? 60_000),
-	cooldownMaxMs: Number(process.env.PI_TODONE_COOLDOWN_MAX_MS ?? 600_000),
-	semanticCheck: (process.env.PI_TODONE_SEMANTIC_CHECK ?? "1") === "1",
 	quietAfterMs: Number(process.env.PI_TODONE_QUIET_AFTER_MS ?? 120_000),
 	createThreshold: Number(process.env.PI_TODONE_CREATE_THRESHOLD ?? 5),
 };
+const COOLDOWN_MAX_MS = 600_000; // 退避上限（写死，不需要旋钮）
+const SEMANTIC_CHECK = true; // 完成项注入验证义务（要关就改这里）
 
 /** 格式闸核心：校验 evidence，合规返回 null，否则返回缺什么。纯函数，可单测。 */
 export function validateEvidence(ev: unknown): string | null {
@@ -195,6 +193,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 	let injectionStreak = 0;
 	let lastIncompleteCount = -1;
 	let stagnantRounds = 0;
+	let stalledNotified = false; // 卡点报告已通知：静默等用户介入或进展，不重复催促
 	const pendingVerify = new Set<number>(); // 已放行但未语义验证的任务 id
 
 	// ── L1：常驻义务（before_agent_start，纯静态，幂等）──
@@ -235,18 +234,23 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		const tasks = snapshot ? snapshot.tasks.filter((t) => t.status !== "deleted") : [];
 		const incomplete = tasks.filter((t) => t.status === "pending" || t.status === "in_progress");
 
-		// 停滞检测
+		// 停滞检测（计数变化 = 有进展，复位卡点通知）
 		if (incomplete.length === lastIncompleteCount) stagnantRounds++;
 		else {
 			stagnantRounds = 0;
 			lastIncompleteCount = incomplete.length;
+			stalledNotified = false;
 		}
 
 		// 退避 + 交互静默
 		const now = Date.now();
-		const cooldown = Math.min(CFG.cooldownMaxMs, CFG.cooldownBaseMs * 2 ** injectionStreak);
+		const cooldown = Math.min(COOLDOWN_MAX_MS, CFG.cooldownBaseMs * 2 ** injectionStreak);
 		if (now - lastInjectionAt < cooldown) return;
 		if (now - lastUserMessageAt(branch) < CFG.quietAfterMs) return; // 用户在交互，不打扰
+
+		const lastUserAt = lastUserMessageAt(branch);
+		if (lastUserAt > lastInjectionAt) stalledNotified = false; // 用户介入，解除静默
+		if (stalledNotified && incomplete.length === lastIncompleteCount) return; // 已通知卡点：静默等用户/进展
 
 		const stats = unitToolStats(branch);
 		let text: string | null = null;
@@ -261,8 +265,9 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 - 粒度：每项是一个可独立验证的结果（≤ 一句话），如"加 idempotency key 去重 + 回归测试"
 - 禁止"实现 X 模块"这类不可验证的粗任务
 （小任务豁免——若你认为这是小任务，回复一句原因即可继续）`;
-		} else if (stagnantRounds >= CFG.stallThreshold) {
-			// 停滞 → 卡点报告（中间态交付），重置注入节奏
+		} else if (stagnantRounds >= CFG.stallThreshold && !stalledNotified) {
+			// 停滞 → 卡点报告（终态通知，不重复；计数变化或用户介入后复位）
+			stalledNotified = true;
 			injectionStreak = 0;
 			text = `${PKG}: 已连续 ${stagnantRounds} 轮无进展（todo 计数未变）。请交付中间态证明：
 - 已完成：列出证据（file/cmd）
@@ -277,7 +282,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			text = `${PKG}: 还有 ${incomplete.length} 项 todo 未完成：
 ${list}
 三选一继续：① 证明本轮进展（附 evidence）② 说明卡点并交付中间态 ③ 直接继续工作。`;
-		} else if (CFG.semanticCheck && pendingVerify.size > 0) {
+		} else if (SEMANTIC_CHECK && pendingVerify.size > 0) {
 			// 全部完成 + 有待语义验证项 → 注入验证义务（一次，清空）
 			const ids = [...pendingVerify].join(", ");
 			pendingVerify.clear();

@@ -53,10 +53,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 
 | 变量 | 默认 | 含义 |
 |---|---|---|
-| `PI_TODONE_STALL_THRESHOLD` | 3 | 停滞几轮转卡点报告 |
-| `PI_TODONE_COOLDOWN_BASE_MS` | 60000 | 注入退避基数 |
-| `PI_TODONE_COOLDOWN_MAX_MS` | 600000 | 退避上限 |
-| `PI_TODONE_SEMANTIC_CHECK` | 1 | 完成项是否注入验证义务 |
+| `PI_TODONE_STALL_THRESHOLD` | 3 | 停滞几轮转卡点报告（通知后静默等用户/进展，不重复催促） |
 | `PI_TODONE_QUIET_AFTER_MS` | 120000 | 最近用户消息静默窗口 |
 | `PI_TODONE_CREATE_THRESHOLD` | 5 | 本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务 |
 
