@@ -1,0 +1,12 @@
+{
+  "lastAuditedId": null,
+  "inFlight": false,
+  "convExtractedLine": 0,
+  "lastAuditAt": 0,
+  "signature": null,
+  "signatureConvLine": 0,
+  "blockedStreak": 0,
+  "auditFindings": [],
+  "lastAuditDurationMs": 0,
+  "auditStartedAt": 0
+}
