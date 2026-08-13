@@ -20,9 +20,11 @@ jobs:
         run: node --experimental-strip-types test/e2e.ts
 
   real-e2e:
-    name: 真实 pi E2E（需模型 key，无 key 自动跳过）
+    name: 真实 pi E2E（需仓库变量 RUN_REAL_E2E=true + secret PI_E2E_API_KEY）
     runs-on: ubuntu-latest
-    if: secrets.PI_E2E_API_KEY != ''
+    if: vars.RUN_REAL_E2E == 'true'
+    env:
+      OPENAI_API_KEY: ${{ secrets.PI_E2E_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,5 +46,3 @@ jobs:
             "用 todo 工具创建任务 subject='E2E-正向'，然后标 completed，metadata.evidence 用 {cmd:'echo ok'}。只做两步。" \
             > pos.jsonl 2>&1
           grep -q "pending → completed" pos.jsonl && echo "✓ 放行成功" || (echo "✗ 未完成" && exit 1)
-        env:
-          OPENAI_API_KEY: ${{ secrets.PI_E2E_API_KEY }}
