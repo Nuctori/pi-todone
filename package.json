@@ -6,7 +6,8 @@
   "types": "src/index.ts",
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types src/demo.ts"
+    "test": "node --experimental-strip-types src/demo.ts && node --experimental-strip-types test/e2e.ts",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "pi-package",

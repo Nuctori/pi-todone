@@ -3,7 +3,7 @@
  * 运行：node --experimental-strip-types src/demo.ts （Node >= 22.6）
  * 非零退出码 = 有断言失败。
  */
-import { validateEvidence, scanTodoSnapshot, unitToolStats } from "./index.ts";
+import { validateEvidence, normalizeEvidence, scanTodoSnapshot, unitToolStats } from "./index.ts";
 
 let failed = 0;
 function check(name: string, actual: unknown, expect: unknown) {
@@ -84,7 +84,28 @@ const st2 = unitToolStats(noTodoBranch as never);
 check("无 todo 单元计数", st2.toolCalls, 3);
 check("无 todo 单元 todoCalls", st2.todoCalls, 0);
 check("无 todo 单元未创建", st2.createdTodo, false);
+check("无 todo 单元未创建", st2.createdTodo, false);
 check("无 user 空分支", unitToolStats([] as never).toolCalls, 0);
+
+// ── normalizeEvidence ──
+const n1 = normalizeEvidence('{"kind":"runnable","evidence":[{"type":"cmd","cmd":"npm test","exit":0}]}');
+check("字符串 JSON 解析", n1.error, null);
+check("字符串 JSON kind", n1.evidence?.kind, "runnable");
+const n2 = normalizeEvidence({ evidence: [{ type: "cmd", cmd: "echo hi" }] });
+check("缺 kind 推断 runnable", n2.evidence?.kind, "runnable");
+const n3 = normalizeEvidence({ evidence: [{ path: "src/a.ts" }] });
+check("条目缺 type 推断 file", n3.evidence?.evidence?.[0]?.type, "file");
+check("条目缺 type 推断 kind", n3.evidence?.kind, "state");
+const n4 = normalizeEvidence("npm test");
+check("裸命令文本包 cmd", n4.evidence?.evidence?.[0]?.cmd, "npm test");
+check("裸命令文本 kind", n4.evidence?.kind, "runnable");
+const n5 = normalizeEvidence(null);
+check("null 无法归一化", n5.error, "evidence 缺失或非对象");
+const n6 = normalizeEvidence({ kind: "magic", evidence: [] });
+check("非法 kind 仍拦截", n6.error, "kind 必须是 state|runnable|effect，实际: magic");
+const n7 = normalizeEvidence({ evidence: "not-array" });
+check("evidence 非数组拦截", n7.error, "evidence.evidence 必须是数组");
+check("归一化后写回格式合法", validateEvidence(n2.evidence), null);
 
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);

@@ -100,6 +100,57 @@ export function validateEvidence(ev: unknown): string | null {
 	return null;
 }
 
+/**
+ * 归一化 evidence：宽容修复常见格式偏差（AI 嵌套 JSON 构造能力弱），
+ * 无法归一化才返回 error。
+ * - 字符串 → JSON.parse
+ * - 缺 kind → 按证据条目推断（有 cmd→runnable，有 file→state）
+ * - 条目缺 type → 有 cmd 字段即 cmd，有 path 即 file
+ */
+export function normalizeEvidence(raw: unknown): { evidence: Evidence | null; error: string | null } {
+	let ev = raw;
+	if (typeof raw === "string") {
+		const t = raw.trim();
+		if (!t) return { evidence: null, error: "evidence 缺失或非对象" };
+		try {
+			ev = JSON.parse(t);
+		} catch {
+			// 不是 JSON 字符串：可能是裸命令文本 → 包成 cmd 证据
+			ev = { kind: "runnable", evidence: [{ type: "cmd", cmd: t }] };
+		}
+	}
+	if (!ev || typeof ev !== "object") return { evidence: null, error: "evidence 缺失或非对象" };
+	// 顶层就是单条目（{cmd:...} 或 {type:"file",path:...}）→ 包成 {evidence:[条目]}
+	const asObj = ev as Record<string, unknown>;
+	if (!("evidence" in asObj) && ("cmd" in asObj || "path" in asObj || "type" in asObj)) {
+		ev = { evidence: [ev] };
+	}
+	const e = ev as Evidence;
+	let list = e.evidence;
+	if (list && typeof list === "object" && !Array.isArray(list)) {
+		// 单对象（AI 最常见偏差：{cmd:...} 或 {type:"file",path:...}）→ 包成数组
+		list = [list];
+		e.evidence = list;
+	}
+	if (!Array.isArray(list)) return { evidence: null, error: "evidence.evidence 必须是数组" };
+	// 条目缺 type → 推断
+	for (const item of list) {
+		if (item && typeof item === "object" && !item.type) {
+			if (typeof item.cmd === "string") item.type = "cmd";
+			else if (typeof item.path === "string") item.type = "file";
+		}
+	}
+	// 缺 kind → 推断
+	if (!e.kind) {
+		const hasCmd = list.some((it) => it && it.type === "cmd");
+		const hasFile = list.some((it) => it && it.type === "file");
+		if (hasCmd) e.kind = "runnable";
+		else if (hasFile) e.kind = "state";
+	}
+	const err = validateEvidence(e);
+	return err ? { evidence: null, error: err } : { evidence: e, error: null };
+}
+
 const EVIDENCE_GUIDE = `todo 标 completed 必须附 metadata.evidence（JSON），格式：
   {"kind":"state","evidence":[{"type":"file","path":"src/a.ts","op":"edit"}]}
   {"kind":"runnable","evidence":[{"type":"cmd","cmd":"npm test","exit":0}]}
@@ -215,11 +266,18 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		if (event.toolName !== "todo") return;
 		const input = event.input as Record<string, unknown> | undefined;
 		if (!input || input.action !== "update" || input.status !== "completed") return;
-		const meta = input.metadata as Record<string, unknown> | undefined;
-		const err = validateEvidence(meta?.evidence);
-		if (err) {
-			return { block: true, reason: `${PKG}: 完成证明缺失（${err}）。${EVIDENCE_GUIDE}` };
+		// 1. metadata 位置修复：AI 常把 evidence 放在顶层或 metadata 传成字符串
+		let meta = input.metadata as Record<string, unknown> | undefined;
+		if (!meta || typeof meta !== "object") {
+			meta = input.evidence !== undefined ? { evidence: input.evidence } : { evidence: meta ?? undefined };
+			input.metadata = meta;
 		}
+		// 2. 归一化：宽容修复格式偏差，修不了才 block
+		const { evidence, error } = normalizeEvidence(meta.evidence);
+		if (error) {
+			return { block: true, reason: `${PKG}: 完成证明缺失（${error}）。${EVIDENCE_GUIDE}` };
+		}
+		meta.evidence = evidence; // 规范化后写回，rpiv-todo 落库的是干净格式
 		if (typeof input.id === "number") {
 			pendingVerify.add(input.id); // 格式合规，但语义未验证
 		}

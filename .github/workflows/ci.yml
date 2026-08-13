@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 自检 + mock E2E（无模型依赖）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 单元自检（格式闸/归一化/快照）
+        run: npm test
+      - name: 扩展级 mock E2E（block/放行/注入/幂等/豁免）
+        run: node --experimental-strip-types test/e2e.ts
+
+  real-e2e:
+    name: 真实 pi E2E（需模型 key，无 key 自动跳过）
+    runs-on: ubuntu-latest
+    if: secrets.PI_E2E_API_KEY != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 安装 pi
+        run: npm install -g @earendil-works/pi-coding-agent
+      - name: 安装插件
+        run: pi install ${{ github.workspace }}
+      - name: 负向 E2E（无 evidence 标 completed 应被 block）
+        run: |
+          pi -p --mode json --no-session -t todo --thinking minimal \
+            "用 todo 工具创建任务 subject='E2E-负向'，然后标 completed（metadata 不带 evidence）。只做两步。" \
+            > neg.jsonl 2>&1
+          grep -q "完成证明缺失" neg.jsonl && echo "✓ block 生效" || (echo "✗ 未拦截" && exit 1)
+      - name: 正向 E2E（带 evidence 应放行）
+        run: |
+          pi -p --mode json --no-session -t todo --thinking minimal \
+            "用 todo 工具创建任务 subject='E2E-正向'，然后标 completed，metadata.evidence 用 {cmd:'echo ok'}。只做两步。" \
+            > pos.jsonl 2>&1
+          grep -q "pending → completed" pos.jsonl && echo "✓ 放行成功" || (echo "✗ 未完成" && exit 1)
+        env:
+          OPENAI_API_KEY: ${{ secrets.PI_E2E_API_KEY }}
