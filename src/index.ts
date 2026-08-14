@@ -606,11 +606,10 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				if (!t || t.status !== "in_progress") continue; // 已非 in_progress：陈旧
 				const deps = (t.blockedBy ?? []).filter((d) => {
 					const dep = tasks.find((x) => x && x.id === d);
-					return (
-						dep && dep.status !== "completed" && dep.status !== "deleted"
-					);
+					return dep && dep.status !== "completed" && dep.status !== "deleted";
 				});
-				if (deps.length === 0) pendingParallel.delete(id); // 依赖已就绪：误记条目退场
+				if (deps.length === 0)
+					pendingParallel.delete(id); // 依赖已就绪：误记条目退场
 				else ids.push(id);
 			}
 			if (ids.length === 0) return;
@@ -621,9 +620,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 						.filter((d) => {
 							const dep = tasks.find((x) => x && x.id === d);
 							return (
-								dep &&
-								dep.status !== "completed" &&
-								dep.status !== "deleted"
+								dep && dep.status !== "completed" && dep.status !== "deleted"
 							);
 						})
 						.map((d) => `#${d}`);
