@@ -4,7 +4,7 @@ Todo completion duty gate + proof-point protocol. Minimal intervention against A
 
 - **Format gate**: marking a `todo` `completed` requires `metadata.evidence` (JSON). Non-conforming → **blocked**, the AI must supply proof before `done`.
 - **Proof-point protocol**: when the agent idles with pending todos → inject "prove this round's progress | explain the blocker | continue"; on prolonged stagnation → trigger re-examination (blocker report).
-- **Creation duty**: complex units (≥5 tool calls) that never created any todo → inject "break down todos first" (with granularity rules); small tasks exempt.
+- **Creation duty**: complex units (≥200 tool calls) that never created any todo → inject "break down todos first" (with granularity rules); small tasks exempt.
 - **Verification duty**: format-valid completions → inject "spawn a fresh reviewer subagent" for semantic verification by the subagent family of LLMs.
 
 The plugin performs **deterministic format validation only** (zero LLM cost, never hallucinates). Semantic verification → independent subagents (collusion-resistant).
@@ -90,14 +90,14 @@ Common deviations are auto-normalized: evidence as single object, string JSON, m
 |---|---|---|
 | `PI_TODONE_STALL_THRESHOLD` | 3 | rounds of no progress before re-examination trigger |
 | `PI_TODONE_QUIET_AFTER_MS` | 120000 | silence window after latest user message |
-| `PI_TODONE_CREATE_THRESHOLD` | 5 | tool calls in unit without any todo → creation-duty injection |
+| `PI_TODONE_CREATE_THRESHOLD` | 200 | tool calls in unit without any todo → creation-duty injection |
 
 Backoff constants and the verification-duty switch are hard-coded (no knobs; edit source to change).
 
 ## Tests
 
 ```bash
-npm test    # demo self-check (36 assertions) + mock E2E (6 scenarios, 15 assertions, no model needed)
+npm test    # demo self-check (52 assertions) + mock E2E (10 scenarios, 25 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.

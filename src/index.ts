@@ -15,11 +15,12 @@
  *
  * 防循环：停滞终态静默、指数退避、同文本去重、交互静默、customType 排除、幂等注入。
  *
- * 配置（环境变量，只有真正会调的 3 个）：
+ * 配置（环境变量，非法值一律回退默认并告警）：
  *   PI_TODONE_STALL_THRESHOLD   停滞几轮转卡点报告（默认 3）
  *   PI_TODONE_QUIET_AFTER_MS    最近用户消息距今小于此值则不注入 ms（默认 120_000）
- *   PI_TODONE_CREATE_THRESHOLD  本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务（默认 5）
- * 退避（60s×2ⁿ 上限 10min）与验证义务开关（SEMANTIC_CHECK）是写死常量，不需要旋钮。
+ *   PI_TODONE_CREATE_THRESHOLD  本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务（默认 200）
+ *   PI_TODONE_COOLDOWN_BASE_MS  退避基数 60s×2ⁿ（默认 60_000；上限 10min 写死）
+ * 验证义务开关（SEMANTIC_CHECK）是写死常量，不需要旋钮。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -56,11 +57,25 @@ interface SessionEntry {
 	};
 }
 
+/** 读环境变量数值：缺省/非法（NaN、负数、空串）回退默认并告警——非法值静默禁用守卫是配置泄露。 */
+export function envNumber(name: string, dflt: number): number {
+	const raw = process.env[name];
+	if (raw === undefined || raw === "") return dflt;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || n < 0) {
+		console.warn(
+			`[${PKG}] 环境变量 ${name}=${JSON.stringify(raw)} 非法，回退默认 ${dflt}`,
+		);
+		return dflt;
+	}
+	return n;
+}
+
 const CFG = {
-	stallThreshold: Number(process.env.PI_TODONE_STALL_THRESHOLD ?? 3),
-	cooldownBaseMs: Number(process.env.PI_TODONE_COOLDOWN_BASE_MS ?? 60_000),
-	quietAfterMs: Number(process.env.PI_TODONE_QUIET_AFTER_MS ?? 120_000),
-	createThreshold: Number(process.env.PI_TODONE_CREATE_THRESHOLD ?? 5),
+	stallThreshold: envNumber("PI_TODONE_STALL_THRESHOLD", 3),
+	cooldownBaseMs: envNumber("PI_TODONE_COOLDOWN_BASE_MS", 60_000),
+	quietAfterMs: envNumber("PI_TODONE_QUIET_AFTER_MS", 120_000),
+	createThreshold: envNumber("PI_TODONE_CREATE_THRESHOLD", 200),
 };
 const COOLDOWN_MAX_MS = 600_000; // 退避上限（写死）
 const SEMANTIC_CHECK = true; // 完成项注入验证义务（要关改这里）
@@ -74,7 +89,10 @@ export function validateEvidence(ev: unknown): string | null {
 	if (kind !== "state" && kind !== "runnable" && kind !== "effect") {
 		return `kind 必须是 state|runnable|effect，实际: ${String(kind)}`;
 	}
-	if (kind === "effect") return null; // 效果类不可硬验证，放行留人工验收
+	if (kind === "effect") {
+		// 效果类不可硬验证，仅要求证据数组形态（可空），留人工验收
+		return Array.isArray(list) ? null : "effect 类 evidence 必须是数组";
+	}
 	if (!Array.isArray(list) || list.length === 0) {
 		return `${kind} 类至少需要 1 条证据`;
 	}
@@ -112,7 +130,10 @@ export function validateEvidence(ev: unknown): string | null {
  * - 条目缺 type → 按字段推断（有 cmd→cmd，有 path→file）
  * - 缺 kind → 按条目推断（有 cmd→runnable，有 file→state）
  */
-export function normalizeEvidence(raw: unknown): { evidence: Evidence | null; error: string | null } {
+export function normalizeEvidence(raw: unknown): {
+	evidence: Evidence | null;
+	error: string | null;
+} {
 	let ev = raw;
 	if (typeof raw === "string") {
 		const t = raw.trim();
@@ -123,10 +144,14 @@ export function normalizeEvidence(raw: unknown): { evidence: Evidence | null; er
 			ev = { kind: "runnable", evidence: [{ type: "cmd", cmd: t }] };
 		}
 	}
-	if (!ev || typeof ev !== "object") return { evidence: null, error: "evidence 缺失或非对象" };
+	if (!ev || typeof ev !== "object")
+		return { evidence: null, error: "evidence 缺失或非对象" };
 	// 顶层就是单条目（{cmd:...} 或 {type:"file",path:...}）→ 包成 {evidence:[条目]}
 	const asObj = ev as Record<string, unknown>;
-	if (!("evidence" in asObj) && ("cmd" in asObj || "path" in asObj || "type" in asObj)) {
+	if (
+		!("evidence" in asObj) &&
+		("cmd" in asObj || "path" in asObj || "type" in asObj)
+	) {
 		ev = { evidence: [ev] };
 	}
 	const e = ev as Evidence;
@@ -134,25 +159,33 @@ export function normalizeEvidence(raw: unknown): { evidence: Evidence | null; er
 	if (list && typeof list === "object" && !Array.isArray(list)) {
 		// 单对象（AI 最常见偏差：{cmd:...} 或 {type:"file",path:...}）→ 包成数组
 		list = [list];
-		e.evidence = list;
 	}
-	if (!Array.isArray(list)) return { evidence: null, error: "evidence.evidence 必须是数组" };
-	// 条目缺 type → 推断
-	for (const item of list) {
-		if (item && typeof item === "object" && !item.type) {
-			if (typeof item.cmd === "string") item.type = "cmd";
-			else if (typeof item.path === "string") item.type = "file";
-		}
-	}
+	if (!Array.isArray(list))
+		return { evidence: null, error: "evidence.evidence 必须是数组" };
+	// 条目缺 type → 推断。全部构建新对象：纯函数，绝不修改输入（输入可能被冻结/共享）
+	const items = list.map((item): EvidenceItem => {
+		if (!item || typeof item !== "object") return item as EvidenceItem;
+		const src = item as unknown as Record<string, unknown>;
+		if (typeof src.type === "string") return item as EvidenceItem;
+		const type =
+			typeof src.cmd === "string"
+				? "cmd"
+				: typeof src.path === "string"
+					? "file"
+					: undefined;
+		return type ? ({ ...src, type } as EvidenceItem) : (item as EvidenceItem);
+	});
 	// 缺 kind → 推断
-	if (!e.kind) {
-		const hasCmd = list.some((it) => it && it.type === "cmd");
-		const hasFile = list.some((it) => it && it.type === "file");
-		if (hasCmd) e.kind = "runnable";
-		else if (hasFile) e.kind = "state";
+	let kind = e.kind;
+	if (!kind) {
+		const hasCmd = items.some((it) => it && it.type === "cmd");
+		const hasFile = items.some((it) => it && it.type === "file");
+		if (hasCmd) kind = "runnable";
+		else if (hasFile) kind = "state";
 	}
-	const err = validateEvidence(e);
-	return err ? { evidence: null, error: err } : { evidence: e, error: null };
+	const norm: Evidence = { ...e, kind, evidence: items };
+	const err = validateEvidence(norm);
+	return err ? { evidence: null, error: err } : { evidence: norm, error: null };
 }
 
 const EVIDENCE_GUIDE = `todo 标 completed 必须附 metadata.evidence（JSON），格式：
@@ -165,40 +198,73 @@ const TODO_DUTY_LINE =
 	"Todo 义务（pi-todone）：复杂任务（多文件/3+ 步骤/长任务）开始前先拆 todo，每项是一个可独立验证的结果（≤ 一句话）；小任务（单文件小改/问答）无需列。标 todo completed 必须附 metadata.evidence（state→file 证据 / runnable→cmd 证据 / effect 留人工验收）；树形任务：父 completed 前子项必须全 completed；详见 pi-todone skill。";
 
 /** 扫描会话分支，返回最新 todo 工具结果快照（todo-enforcer 同款模式，纯读）。 */
-export function scanTodoSnapshot(branch: SessionEntry[]): { tasks: TodoTask[] } | null {
-	let latest: { tasks: TodoTask[] } | null = null;
-	for (const entry of branch) {
+export function scanTodoSnapshot(
+	branch: SessionEntry[],
+): { tasks: TodoTask[] } | null {
+	// 反向扫描：最新 todo 工具结果即最新快照，命中即停（O(本单元) 而非 O(整个会话)，
+	// 每次 todo 调用都会走此函数，长会话避免 O(n²)）
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
 		if (entry.type !== "message" || !entry.message) continue;
 		const msg = entry.message;
 		if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
-		let d = msg.details as { tasks?: unknown } | { details?: { tasks?: unknown } } | undefined;
-		if (d && !Array.isArray((d as { tasks?: unknown }).tasks) && (d as { details?: unknown }).details) {
-			d = (d as { details?: { tasks?: unknown } }).details as { tasks?: unknown };
+		let d = msg.details as
+			| { tasks?: unknown }
+			| { details?: { tasks?: unknown } }
+			| undefined;
+		if (
+			d &&
+			!Array.isArray((d as { tasks?: unknown }).tasks) &&
+			(d as { details?: unknown }).details
+		) {
+			d = (d as { details?: { tasks?: unknown } }).details as {
+				tasks?: unknown;
+			};
 		}
 		if (d && Array.isArray((d as { tasks?: unknown }).tasks)) {
-			latest = d as { tasks: TodoTask[] };
+			return d as { tasks: TodoTask[] };
 		}
 	}
-	return latest;
+	return null;
 }
 
 /** 树完整性：create 引用校验。parentId 必须存在于快照。纯函数，可单测。 */
-export function validateParentRef(tasks: TodoTask[], parentId: unknown): string | null {
+export function validateParentRef(
+	tasks: TodoTask[],
+	parentId: unknown,
+): string | null {
 	if (parentId === undefined || parentId === null) return null; // 根节点合法
-	if (typeof parentId !== "number") return `parentId 必须是数字，实际: ${String(parentId)}`;
-	if (!tasks.some((t) => t.id === parentId)) return `parentId 引用的任务 #${parentId} 不存在`;
+	if (typeof parentId !== "number")
+		return `parentId 必须是数字，实际: ${String(parentId)}`;
+	if (!tasks.some((t) => t.id === parentId))
+		return `parentId 引用的任务 #${parentId} 不存在`;
 	return null;
 }
 
 /** 树完整性：完成闭包。子项（parentId=自己，跳过 deleted）全 completed 才允许 completed。纯函数。 */
 export function canCompleteTree(tasks: TodoTask[], id: unknown): string | null {
-	if (typeof id !== "number") return null;
-	const children = tasks.filter((t) => t.metadata?.parentId === id && t.status !== "deleted");
+	if (typeof id !== "number") return `id 必须是数字，实际: ${String(id)}`; // 无法判定不放行（门禁不静默绕过）
+	const children = tasks.filter(
+		(t) => t.metadata?.parentId === id && t.status !== "deleted",
+	);
 	if (children.length === 0) return null;
 	const unfinished = children.filter((t) => t.status !== "completed");
 	if (unfinished.length > 0) {
 		return `子任务 ${unfinished.map((t) => `#${t.id} ${t.subject}`).join("、")} 未完成，父任务不能宣告 completed`;
 	}
+	return null;
+}
+
+/** 解析工具调用参数（字符串 JSON 或对象，宽容容错）。纯函数。 */
+function parseToolArgs(raw: unknown): Record<string, unknown> | null {
+	if (typeof raw === "string") {
+		try {
+			return JSON.parse(raw) as Record<string, unknown>;
+		} catch {
+			return null;
+		}
+	}
+	if (raw && typeof raw === "object") return raw as Record<string, unknown>;
 	return null;
 }
 
@@ -235,35 +301,19 @@ export function unitToolStats(branch: SessionEntry[]): {
 			toolCalls++;
 			if (c.name === "subagent") hasLongWait = true;
 			if (c.name === "shell" || c.name === "pwsh" || c.name === "bash") {
-				const raw = c.arguments;
-				let args: Record<string, unknown> | null = null;
-				if (typeof raw === "string") {
-					try {
-						args = JSON.parse(raw) as Record<string, unknown>;
-					} catch {
-						args = null;
-					}
-				} else if (raw && typeof raw === "object") {
-					args = raw as Record<string, unknown>;
-				}
-				if (args && typeof args.timeout === "number" && args.timeout >= LONG_WAIT_MS) {
+				const args = parseToolArgs(c.arguments);
+				if (
+					args &&
+					typeof args.timeout === "number" &&
+					args.timeout >= LONG_WAIT_MS
+				) {
 					hasLongWait = true;
 				}
 			}
 			if (c.name !== "todo") continue;
 			todoCalls++;
 			if (createdTodo) continue;
-			const raw = c.arguments;
-			let args: Record<string, unknown> | null = null;
-			if (typeof raw === "string") {
-				try {
-					args = JSON.parse(raw) as Record<string, unknown>;
-				} catch {
-					args = null;
-				}
-			} else if (raw && typeof raw === "object") {
-				args = raw as Record<string, unknown>;
-			}
+			const args = parseToolArgs(c.arguments);
 			if (args && args.action === "create") createdTodo = true;
 		}
 	}
@@ -295,18 +345,41 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 	let stalledNotified = false; // 卡点报告已通知：静默等用户介入或进展，不重复催促
 	const pendingVerify = new Set<number>(); // 已放行但未语义验证的任务 id
 	const pendingParallel = new Set<number>(); // 依赖未完成就 in_progress 的任务 id（待确认）
+	let currentRound = 0; // 回合号：agent_start 递增（回合级守卫用）
+	let lastInjectedRound = -1; // 已注入的回合号（同回合多轮 turn_end 只注入一次）
+	let lastStallRound = -1; // 停滞计数已更新的回合号（同回合多轮只计一次）
 
-	/** 注入一条建议（customType 标记：静默/统计排除自身，防自反馈循环）。 */
-	async function inject(text: string, now: number): Promise<void> {
-		if (text === lastInjectionText) return; // 同文本去重
+	/** 注入一条建议（customType 标记：静默/统计排除自身，防自反馈循环）。
+	 * deliverAs: steer=回合内投递（下次 LLM 调用前，agent 本回合消化，不产生新回合）；
+	 * followUp=回合结束投递（agent_settled 兜底用）。均不 triggerTurn：避免"汇报后接短工作"。
+	 * 返回 true=已投递（或同文本已提示过）；false=投递失败（去重/退避/streak 状态未提交，
+	 * 调用方保留提示状态下轮重试——状态提交后置于效果成功之后，失败不污染防循环状态）。 */
+	async function inject(
+		text: string,
+		now: number,
+		deliverAs: "steer" | "followUp" = "steer",
+	): Promise<boolean> {
+		if (text === lastInjectionText) return true; // 同文本去重：已提示过，视为已投递
+		lastInjectedRound = currentRound; // 先占回合：并发 turn_end/agent_settled 不双发
+		try {
+			await pi.sendMessage(
+				{ customType: SELF_TYPE, content: text, display: true },
+				{ deliverAs, triggerTurn: false },
+			);
+		} catch (err) {
+			console.error(`[${PKG}] 注入失败（状态未提交，下轮重试）:`, err);
+			return false;
+		}
 		lastInjectionText = text;
 		lastInjectionAt = now;
 		injectionStreak++;
-		await pi.sendMessage(
-			{ customType: SELF_TYPE, content: text, display: true },
-			{ deliverAs: "followUp", triggerTurn: true },
-		);
+		return true;
 	}
+
+	// ── 回合级守卫：agent_start 递增回合号（turn_end 每轮触发，注入/停滞计数需按回合去重）──
+	pi.on("agent_start", () => {
+		currentRound++;
+	});
 
 	// ── L1：常驻义务（before_agent_start，纯静态，幂等）──
 	pi.on("before_agent_start", (event) => {
@@ -336,7 +409,10 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			const meta = input.metadata as Record<string, unknown> | undefined;
 			const err = validateParentRef(tasks, meta?.parentId);
 			if (err) {
-				return { block: true, reason: `${PKG}: ${err}。树形任务：父节点必须先创建，子节点用 metadata.parentId 挂载。` };
+				return {
+					block: true,
+					reason: `${PKG}: ${err}。树形任务：父节点必须先创建，子节点用 metadata.parentId 挂载。`,
+				};
 			}
 			return;
 		}
@@ -346,19 +422,32 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			// 树完整性：子项（跳过 deleted）全 completed 才能 completed
 			const treeErr = canCompleteTree(tasks, input.id);
 			if (treeErr) {
-				return { block: true, reason: `${PKG}: ${treeErr}。先完成子任务，或将其标回 pending/deleted。` };
+				return {
+					block: true,
+					reason: `${PKG}: ${treeErr}。先完成子任务，或将其标回 pending/deleted。`,
+				};
 			}
-			// evidence 格式闸
-			let meta = input.metadata as Record<string, unknown> | undefined;
-			if (!meta || typeof meta !== "object") {
-				meta = input.evidence !== undefined ? { evidence: input.evidence } : { evidence: meta ?? undefined };
-				input.metadata = meta;
-			}
-			const { evidence, error } = normalizeEvidence(meta.evidence);
+			// evidence 格式闸：判定用纯函数，不依赖输入可变性；顶层 evidence 与 metadata 缺失时回退一致
+			const meta0 = input.metadata as Record<string, unknown> | undefined;
+			const raw =
+				meta0 && typeof meta0 === "object" && "evidence" in meta0
+					? meta0.evidence
+					: input.evidence;
+			const { evidence, error } = normalizeEvidence(raw);
 			if (error) {
-				return { block: true, reason: `${PKG}: 完成证明缺失（${error}）。${EVIDENCE_GUIDE}` };
+				return {
+					block: true,
+					reason: `${PKG}: 完成证明缺失（${error}）。${EVIDENCE_GUIDE}`,
+				};
 			}
-			meta.evidence = evidence; // 规范化后写回，落库的是干净格式
+			// 规范化写回：尽力而为——输入可能被冻结/只读，失败只损失落库格式，不阻断放行、不抛给事件分发
+			try {
+				const meta = meta0 && typeof meta0 === "object" ? meta0 : {};
+				meta.evidence = evidence;
+				input.metadata = meta;
+			} catch (err) {
+				console.error(`[${PKG}] evidence 规范化写回失败（已放行）:`, err);
+			}
 			if (typeof input.id === "number") {
 				pendingVerify.add(input.id); // 格式合规，但语义未验证
 			}
@@ -378,39 +467,57 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// ── 建议层（agent_end，统一注入器）──
-	pi.on("agent_end", async (_event, ctx) => {
-		const branch = ctx.sessionManager?.getBranch?.();
-		if (!Array.isArray(branch)) return;
+	// ── 建议层（turn_end：回合内注入——agent 消化提示后再收尾，汇报与提示一体，
+	//    不产生"汇报结束后接短工作"；agent_settled 兜底：单轮回合/steer 未投递时补一次）──
+	async function judgeAndInject(
+		branch: SessionEntry[],
+		now: number,
+		deliverAs: "steer" | "followUp",
+	): Promise<void> {
 		const snapshot = scanTodoSnapshot(branch);
-		const tasks = snapshot ? snapshot.tasks.filter((t) => t.status !== "deleted") : [];
-		const incomplete = tasks.filter((t) => t.status === "pending" || t.status === "in_progress");
+		const tasks = snapshot
+			? snapshot.tasks.filter((t) => t.status !== "deleted")
+			: [];
+		const incomplete = tasks.filter(
+			(t) => t.status === "pending" || t.status === "in_progress",
+		);
 
-		// 停滞检测（计数变化 = 有进展，复位卡点通知）
-		if (incomplete.length === lastIncompleteCount) stagnantRounds++;
-		else {
+		// 停滞检测（只对有 todo 的单元计数：无 todo 时"审视 todo 树"无对象，不累积不提示；
+		// 计数变化 = 有进展，复位卡点通知）
+		if (tasks.length > 0 && lastStallRound !== currentRound) {
+			lastStallRound = currentRound;
+			if (incomplete.length === lastIncompleteCount) stagnantRounds++;
+			else {
+				stagnantRounds = 0;
+				lastIncompleteCount = incomplete.length;
+				stalledNotified = false;
+			}
+		} else if (tasks.length === 0) {
 			stagnantRounds = 0;
 			lastIncompleteCount = incomplete.length;
 			stalledNotified = false;
 		}
 
 		// 退避 + 交互静默
-		const now = Date.now();
-		const cooldown = Math.min(COOLDOWN_MAX_MS, CFG.cooldownBaseMs * 2 ** injectionStreak);
+		const cooldown = Math.min(
+			COOLDOWN_MAX_MS,
+			CFG.cooldownBaseMs * 2 ** injectionStreak,
+		);
 		if (now - lastInjectionAt < cooldown) return;
-		if (now - lastUserMessageAt(branch) < CFG.quietAfterMs) return; // 用户在交互，不打扰
 
 		const lastUserAt = lastUserMessageAt(branch);
+		if (now - lastUserAt < CFG.quietAfterMs) return; // 用户在交互，不打扰
 		if (lastUserAt > lastInjectionAt) stalledNotified = false; // 用户介入，解除静默
 		if (stalledNotified && incomplete.length === lastIncompleteCount) return; // 已通知卡点：静默等用户/进展
 
 		const stats = unitToolStats(branch);
 		let text: string | null = null;
+		let notifyStall = false;
 
-		// ① 停滞 → 重新审视树结构（终态通知，不重复；计数变化或用户介入后复位）
+		// ① 停滞 → 重新审视树结构（终态通知，不重复；计数变化或用户介入后复位；
+		//    投递成功才置 stalledNotified/重置退避——失败保留，下轮重试）
 		if (stagnantRounds >= CFG.stallThreshold && !stalledNotified) {
-			stalledNotified = true;
-			injectionStreak = 0;
+			notifyStall = true;
 			text = `${PKG}: 已连续 ${stagnantRounds} 轮无进展。请先重新审视 todo 树结构（目标节点对照用户原话仍成立吗？拆错/顺序/死路？），更新后再继续；若确已无法推进，标回 pending 并说明。`;
 		}
 		// ② 创建义务：任务复杂但完全没拆 todo
@@ -425,16 +532,23 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 - 树形：复杂任务先建根节点（目标，对照用户原话），子任务用 metadata.parentId 挂载
 （小任务豁免——若你认为这是小任务，回复一句原因即可继续）`;
 		}
-		// ③ 并行建议：跳步确认（依赖未完成就 in_progress）
+		// ③ 并行建议：跳步确认（依赖未完成就 in_progress；只提示仍存活的，陈旧 id 丢弃）
 		else if (pendingParallel.size > 0) {
-			const ids = [...pendingParallel];
-			pendingParallel.clear();
+			const ids = [...pendingParallel].filter((id) =>
+				tasks.some((t) => t.id === id && t.status === "in_progress"),
+			);
+			if (ids.length === 0) {
+				pendingParallel.clear(); // 全部陈旧：直接丢弃
+				return;
+			}
 			const lines = ids
 				.slice(0, 3)
 				.map((id) => {
 					const t = tasks.find((x) => x.id === id);
 					const deps = (t?.blockedBy ?? [])
-						.filter((d) => tasks.some((x) => x.id === d && x.status !== "completed"))
+						.filter((d) =>
+							tasks.some((x) => x.id === d && x.status !== "completed"),
+						)
 						.map((d) => `#${d}`);
 					return `#${id} ${t?.subject ?? ""}（前置 ${deps.join("、")} 未完成）`;
 				})
@@ -446,7 +560,9 @@ ${lines}
 		// ④ 等待间隙：有长等待（subagent/长命令）+ 有可并行 pending → 趁等待推进
 		else if (stats.hasLongWait) {
 			const parallelizable = incomplete.filter((t) => {
-				const deps = (t.blockedBy ?? []).filter((d) => tasks.some((x) => x.id === d && x.status !== "completed"));
+				const deps = (t.blockedBy ?? []).filter((d) =>
+					tasks.some((x) => x.id === d && x.status !== "completed"),
+				);
 				return deps.length === 0;
 			});
 			if (parallelizable.length > 0) {
@@ -471,12 +587,49 @@ ${list}
 		}
 		// ⑥ 验证义务：全部完成 + 有待语义验证项
 		else if (SEMANTIC_CHECK && pendingVerify.size > 0) {
-			const ids = [...pendingVerify].join(", ");
-			pendingVerify.clear();
-			text = `${PKG}: 任务 #${ids} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
+			// 只提示仍 completed 的；被改回 pending/deleted 的陈旧 id 直接丢弃
+			const ids = [...pendingVerify].filter((id) =>
+			tasks.some((t) => t.id === id && t.status === "completed"),
+			);
+			if (ids.length === 0) {
+				pendingVerify.clear();
+				return;
+			}
+			text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
 subagent 独立验证（只读检查文件/测试，对照 evidence 声称），发现缺口当场修复后再收尾。`;
 		}
 		if (!text) return;
-		await inject(text, now);
+		// 投递成功才提交提示状态：失败保留（集合不清、终态不置），下轮重试
+		if (await inject(text, now, deliverAs)) {
+			pendingParallel.clear();
+			pendingVerify.clear();
+			if (notifyStall) {
+				stalledNotified = true;
+				injectionStreak = 0;
+			}
+		}
+	}
+
+	pi.on("turn_end", async (_event, ctx) => {
+		try {
+			if (lastInjectedRound === currentRound) return; // 本回合已注入
+			const branch = ctx.sessionManager?.getBranch?.();
+			if (!Array.isArray(branch)) return;
+			await judgeAndInject(branch, Date.now(), "steer");
+		} catch (err) {
+			// 建议器异常不泄漏为 unhandled rejection（不打断 pi 事件分发）
+			console.error(`[${PKG}] turn_end 建议器异常（已忽略）:`, err);
+		}
+	});
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		try {
+			if (lastInjectedRound === currentRound) return; // 回合内已注入，不重复
+			const branch = ctx.sessionManager?.getBranch?.();
+			if (!Array.isArray(branch)) return;
+			await judgeAndInject(branch, Date.now(), "followUp");
+		} catch (err) {
+			console.error(`[${PKG}] agent_settled 建议器异常（已忽略）:`, err);
+		}
 	});
 }

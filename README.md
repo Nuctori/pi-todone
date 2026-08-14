@@ -5,7 +5,7 @@ todo 状态机守护：完成义务闸 + 树完整性 + 证明点协议 + 并行
 - **格式闸**：`todo` 标 `completed` 必须附 `metadata.evidence`（JSON），格式不合规 → **block**（宽容归一化，无法归一化才 block）
 - **树完整性**：子节点挂到不存在的父 → block；父 `completed` 时子任务未完成 → block（目标不能假完成）
 - **证明点协议**：agent 空闲且有 pending todo → 注入"证明本轮进展 | 说明卡点 | 继续"；连续无进展 → 触发重新审视树结构
-- **创建义务**：复杂任务（本单元 ≥5 次工具调用）但完全没拆 todo → 注入"请先拆 todo"（树形 + 粒度规范）；小任务豁免
+- **创建义务**：复杂任务（本单元 ≥200 次工具调用）但完全没拆 todo → 注入"请先拆 todo"（树形 + 粒度规范）；小任务豁免
 - **并行建议**：依赖未完成就开工 → 确认提示；subagent/长命令等待期间 → 提示推进无依赖任务
 - **验证义务**：格式合规的完成项 → 注入"请 spawn fresh reviewer 独立验证"，由 subagent 系 LLM 做语义判断
 
@@ -18,7 +18,7 @@ todo 状态机守护：完成义务闸 + 树完整性 + 证明点协议 + 并行
 pi-todone 的语义边界只有一条：**todo 的完成义务**。围绕 todo 的其他职责刻意留在外面：
 
 | 职责 | 语义 | 归属 |
-|---|---|---|
+| --- | --- | --- |
 | todo 义务（evidence 格式、树完整性、空闲注入、停滞检测、并行建议） | 机械、可判定 | **本插件**（硬闸 + 建议） |
 | 结构规范（结果导向、依赖显式、卡点重规划） | 语义、不可判定 | **pi-todone skill**（规范层，AI 自觉） |
 | 目标理解（用户要什么、什么算达成） | 语义 | **AI + 用户验收**（不依赖任何其他插件） |
@@ -49,7 +49,7 @@ pi-todone 的语义边界只有一条：**todo 的完成义务**。围绕 todo �
 ## 三层知识架构（缓存安全）
 
 | 层 | 通道 | 内容 | 缓存影响 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | L1 常驻 | `before_agent_start` → `promptGuidelines` 追加**编译期常量** | 2 行义务摘要 | ✅ 静态字节 → 缓存命中 |
 | L2 按需 | `~/.agents/skills/pi-todone/SKILL.md` | 完整规则：粒度判定、evidence 格式、结构三原则、验证流程 | ✅ 不触发不加载 |
 | L3 强制 | block reason + agent_end 注入（customType 消息，`triggerTurn` 自动继续） | 违规时现场教 + 继续义务 | ✅ 走消息通道，不碰 system prompt |
@@ -71,7 +71,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 ```
 
 | kind | 含义 | 格式闸 |
-|---|---|---|
+| --- | --- | --- |
 | `state` | "X 文件已改" | ≥1 条 file 证据（path 必填，op ∈ write/edit/delete） |
 | `runnable` | "测试通过/构建成功" | ≥1 条 cmd 证据（cmd 必填，exit 可选数字） |
 | `effect` | "性能提升/更清晰" | 不拦截，留人工验收 |
@@ -90,17 +90,17 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 ## 配置（环境变量）
 
 | 变量 | 默认 | 含义 |
-|---|---|---|
+| --- | --- | --- |
 | `PI_TODONE_STALL_THRESHOLD` | 3 | 停滞几轮触发重新审视 |
 | `PI_TODONE_QUIET_AFTER_MS` | 120000 | 最近用户消息静默窗口 |
-| `PI_TODONE_CREATE_THRESHOLD` | 5 | 本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务 |
+| `PI_TODONE_CREATE_THRESHOLD` | 200 | 本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务 |
 
 退避算法与验证义务开关是写死常量（不需要旋钮；要关改代码）。
 
 ## 测试
 
 ```bash
-npm test    # demo 自检（45 断言）+ mock E2E（10 场景 23 断言，无模型依赖）
+npm test    # demo 自检（52 断言）+ mock E2E（10 场景 25 断言，无模型依赖）
 ```
 
 CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。

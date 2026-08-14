@@ -1,6 +1,6 @@
 {
   "name": "pi-todone",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Todo 完成义务闸 + 证明点协议：todo 标 completed 必须附 evidence（格式闸），空闲时有 pending 注入证明义务（证明/继续/卡点），语义验证交给 subagent 系",
   "main": "src/index.ts",
   "types": "src/index.ts",
