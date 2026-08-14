@@ -10,6 +10,7 @@ import {
 	unitToolStats,
 	validateParentRef,
 	canCompleteTree,
+	pruneAlive,
 	envNumber,
 } from "./index.ts";
 
@@ -350,6 +351,19 @@ check(
 	canCompleteTree(treeTasks, "1"),
 	"id 必须是数字，实际: 1",
 );
+
+// ── pruneAlive（v0.4.4：集合陈旧剪枝，不依赖注入路径）──
+const paTasks = [
+	{ id: 1, subject: "a", status: "in_progress" },
+	{ id: 2, subject: "b", status: "completed" },
+	{ id: 3, subject: "c", status: "pending" },
+];
+const pa1 = new Set([1, 2, 3, 99]);
+pruneAlive(pa1, paTasks, "in_progress");
+check("pruneAlive 只留 in_progress", [...pa1].sort().join(","), "1");
+const pa2 = new Set([1, 2, 3, 99]);
+pruneAlive(pa2, paTasks, "completed");
+check("pruneAlive 只留 completed", [...pa2].sort().join(","), "2");
 
 // ── unitToolStats hasLongWait ──
 const waitBranch = [

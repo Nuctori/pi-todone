@@ -76,14 +76,13 @@ function check(name: string, actual: unknown, expect: unknown) {
 	}
 }
 
-function userMsg(text: string) {
+/** timestamp 放 entry 顶层（与 pi SessionEntryBase 一致，e2e mock 曾错放 message 内致 quiet 分支成盲区）；
+ * 默认远古时间戳 = 恒不触发交互静默（不依赖墙钟）；传最近时间戳可测 quiet 抑制。 */
+function userMsg(text: string, timestamp = "2000-01-01T00:00:00.000Z") {
 	return {
 		type: "message",
-		message: {
-			role: "user",
-			content: text,
-			timestamp: "2026-08-13T00:00:00.000Z",
-		},
+		timestamp,
+		message: { role: "user", content: text },
 	};
 }
 function toolCall(name: string, args: unknown) {
@@ -604,7 +603,11 @@ function toolResult(name: string, details: unknown) {
 	try {
 		// 轮 1：B pending → ⑤ 证明点注入（优先级高于 ⑥，但不得清 pendingVerify）
 		await fireRound(m, branch, 1);
-		check("S19 先注入证明点", m.sent[0]?.includes("还有 1 项 todo 未完成"), true);
+		check(
+			"S19 先注入证明点",
+			m.sent[0]?.includes("还有 1 项 todo 未完成"),
+			true,
+		);
 		fakeNow += 130_000; // 越过 120s 退避
 		// 轮 2：全部完成 → ⑥ 验证义务必须仍触发（A 的验证义务未被冲掉）
 		const branch2 = [
@@ -657,8 +660,6 @@ function toolResult(name: string, details: unknown) {
 	fail = false;
 	await m.fire("agent_settled", {} as never, turnCtx(branch));
 	check("S20 同轮 settled 兜底重试成功", m.sent.length, 1);
-	fail = false;
-	check("S20 同轮 settled 兜底重试成功", m.sent.length, 1);
 	check("S20 兜底走 followUp", m.sentDeliverAs[0], "followUp");
 }
 
@@ -681,7 +682,10 @@ function toolResult(name: string, details: unknown) {
 	];
 	await m.fire(
 		"tool_call",
-		{ toolName: "todo", input: { action: "update", id: 2, status: "in_progress" } } as never,
+		{
+			toolName: "todo",
+			input: { action: "update", id: 2, status: "in_progress" },
+		} as never,
 		turnCtx(branch1),
 	);
 	// 任务 2 已完成 → 新轮 turn_end：陈旧 id 丢弃，不注入 ③
@@ -719,11 +723,120 @@ function toolResult(name: string, details: unknown) {
 	];
 	const ret = await m.fire(
 		"tool_call",
-		{ toolName: "todo", input: { action: "update", id: 2, status: "in_progress" } } as never,
+		{
+			toolName: "todo",
+			input: { action: "update", id: 2, status: "in_progress" },
+		} as never,
 		turnCtx(branch),
 	);
 	check("S22 畸形 blockedBy 不崩", ret, undefined);
 }
+
+// ── 场景 23：⑥ 验证义务注入（全完成 + 待语义验证项；v0.4.4：全完成树不判停滞，⑥ 不被 ① 饿死）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const evidence = {
+		kind: "runnable",
+		evidence: [{ type: "cmd", cmd: "echo", exit: 0 }],
+	};
+	const ret = await m.fire(
+		"tool_call",
+		{
+			toolName: "todo",
+			input: { action: "update", id: 1, status: "completed", metadata: { evidence } },
+		} as never,
+	);
+	check("S23 evidence 放行", ret, undefined);
+	const branch = [
+		userMsg("做任务"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [{ id: 1, subject: "任务A", status: "completed" }],
+			nextId: 2,
+		}),
+	];
+	await fireRound(m, branch, 1);
+	check("S23 验证义务注入", m.sent.length, 1);
+	check("S23 文本含独立验证", m.sent[0]?.includes("独立验证"), true);
+}
+
+// ── 场景 24：全完成树 4 回合不误诊停滞（incomplete=0 不计数；v0.4.4 修复 ① 饿死 ⑥ 的根因）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("干活"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [{ id: 1, subject: "A", status: "completed" }],
+			nextId: 2,
+		}),
+	];
+	const realNow = Date.now;
+	let fakeNow = realNow();
+	Date.now = () => fakeNow;
+	try {
+		for (let r = 1; r <= 4; r++) {
+			await fireRound(m, branch, r);
+			fakeNow += 130_000; // 每次越过退避窗口：若误计数，① 会在第 3 回合触发
+		}
+	} finally {
+		Date.now = realNow;
+	}
+	check("S24 无停滞报告", m.sent.some((t) => t.includes("重新审视")), false);
+	check("S24 无任何注入", m.sent.length, 0);
+}
+
+// ── 场景 25：交互静默（quietAfterMs 窗口内不注入；mock timestamp 对齐后此分支可测）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const realNow = Date.now;
+	let fakeNow = realNow();
+	Date.now = () => fakeNow;
+	try {
+		const branch = [
+			userMsg("做任务", new Date(fakeNow - 10_000).toISOString()),
+			toolCall("todo", { action: "create", subject: "任务A" }),
+			toolResult("todo", {
+				action: "create",
+				params: {},
+				tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+				nextId: 2,
+			}),
+		];
+		await fireRound(m, branch, 1);
+		check("S25 静默窗口内不注入", m.sent.length, 0);
+		fakeNow += 200_000; // 越过 120s 静默窗口
+		await fireRound(m, branch, 2);
+		check("S25 窗口过后注入", m.sent.length, 1);
+	} finally {
+		Date.now = realNow;
+	}
+}
+
+// ── 场景 26：重复注册幂等（同实例二次加载不重复注册，防双注入；v0.4.4）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	todoneExtension(m.pi as never); // 第二次调用应被 WeakSet 守卫忽略
+	const branch = [
+		userMsg("做任务"),
+		toolCall("todo", { action: "create", subject: "任务A" }),
+		toolResult("todo", {
+			action: "create",
+			params: {},
+			tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+			nextId: 2,
+		}),
+	];
+	await fireRound(m, branch, 1);
+	check("S26 重复注册只注入一次", m.sent.length, 1);
+}
+
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);
 	process.exit(1);

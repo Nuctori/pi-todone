@@ -91,17 +91,17 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
+| `PI_TODONE_STALL_THRESHOLD` | 3 | 停滞几轮转卡点报告 |
+| `PI_TODONE_QUIET_AFTER_MS` | 120000 | 最近用户消息距今小于此值则不注入（交互静默） |
 | `PI_TODONE_CREATE_THRESHOLD` | 200 | 本单元工具调用 ≥ 此值且未拆 todo 则注入创建义务 |
 | `PI_TODONE_COOLDOWN_BASE_MS` | 60000 | 退避基数 60s×2ⁿ（上限 10min 写死） |
 
 验证义务开关（SEMANTIC_CHECK）是写死常量（要关改代码）。
 
-退避算法与验证义务开关是写死常量（不需要旋钮；要关改代码）。
-
 ## 测试
 
 ```bash
-npm test    # demo 自检（58 断言）+ mock E2E（19 场景 51 断言，无模型依赖）
+npm test    # demo 自检（60 断言）+ mock E2E（26 场景 58 断言，无模型依赖）
 ```
 
 CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。

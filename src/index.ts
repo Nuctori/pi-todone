@@ -26,6 +26,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const PKG = "pi-todone";
 const SELF_TYPE = "pi-todone"; // 注入消息 customType：静默/单元统计排除自身
+const registered = new WeakSet<ExtensionAPI>(); // 模块级幂等：热重载/重复加载 → 双 handler → 双份闭包 → 每回合双注入
 
 interface EvidenceItem {
 	type: string;
@@ -60,7 +61,14 @@ interface SessionEntry {
 /** 读环境变量数值：缺省/非法（NaN、负数、空串）回退默认并告警——非法值静默禁用守卫是配置泄露。 */
 export function envNumber(name: string, dflt: number): number {
 	const raw = process.env[name];
-	if (raw === undefined || raw.trim() === "") return dflt;
+	if (raw === undefined) return dflt;
+	if (raw.trim() === "") {
+		// 纯空白串 Number() 得 0 会静默变零值——按非法回退并告警
+		console.warn(
+			`[${PKG}] 环境变量 ${name}=${JSON.stringify(raw)} 非法（空白），回退默认 ${dflt}`,
+		);
+		return dflt;
+	}
 	const n = Number(raw);
 	if (!Number.isFinite(n) || n < 0) {
 		console.warn(
@@ -255,6 +263,19 @@ export function canCompleteTree(tasks: TodoTask[], id: unknown): string | null {
 	return null;
 }
 
+/** 剪枝集合：只保留在当前快照中仍处于指定状态的任务 id（就地删除，调用方持有引用不变）。
+ * 纯函数，可单测。不依赖注入路径——交互静默/退避窗口内集合只增不减是无界增长。 */
+export function pruneAlive(
+	ids: Set<number>,
+	tasks: TodoTask[],
+	want: "in_progress" | "completed",
+): void {
+	for (const id of [...ids]) {
+		const t = tasks.find((x) => x && x.id === id);
+		if (!t || t.status !== want) ids.delete(id);
+	}
+}
+
 /** 解析工具调用参数（字符串 JSON 或对象，宽容容错）。纯函数。 */
 function parseToolArgs(raw: unknown): Record<string, unknown> | null {
 	if (typeof raw === "string") {
@@ -336,6 +357,8 @@ function lastUserMessageAt(branch: SessionEntry[]): number {
 }
 
 export default function todoneExtension(pi: ExtensionAPI): void {
+	if (registered.has(pi)) return; // 幂等：同一实例重复加载不重复注册
+	registered.add(pi);
 	// 注入状态（防循环）
 	let lastInjectionText = "";
 	let lastInjectionAt = 0;
@@ -367,7 +390,8 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				{ deliverAs, triggerTurn: false },
 			);
 		} catch (err) {
-			lastInjectedRound = -1; // 释放回合占位：同轮 agent_settled 兜底可重试（终轮回合失败不永久丢失）
+			// 仅释放自身回合的占位：非顺序派发下回合 N 的失败不得误释放回合 N+1 的占位（防 settled 二次注入）
+			if (lastInjectedRound === currentRound) lastInjectedRound = -1;
 			console.error(`[${PKG}] 注入失败（状态未提交，可重试）:`, err);
 			return false;
 		}
@@ -488,9 +512,18 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			(t) => t.status === "pending" || t.status === "in_progress",
 		);
 
+		// 集合与当前快照对齐（不依赖注入路径：交互静默/退避窗口内也剪枝，防无界增长；
+		// ③⑥ 分支内的过滤保留为投递路径兜底）
+		pruneAlive(pendingParallel, tasks, "in_progress");
+		pruneAlive(pendingVerify, tasks, "completed");
+
 		// 停滞检测（只对有 todo 的单元计数：无 todo 时"审视 todo 树"无对象，不累积不提示；
 		// 计数变化 = 有进展，复位卡点通知）
-		if (tasks.length > 0 && lastStallRound !== currentRound) {
+		if (
+			tasks.length > 0 &&
+			incomplete.length > 0 &&
+			lastStallRound !== currentRound
+		) {
 			lastStallRound = currentRound;
 			if (incomplete.length === lastIncompleteCount) stagnantRounds++;
 			else {
@@ -498,7 +531,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				lastIncompleteCount = incomplete.length;
 				stalledNotified = false;
 			}
-		} else if (tasks.length === 0) {
+		} else if (incomplete.length === 0) {
 			stagnantRounds = 0;
 			lastIncompleteCount = incomplete.length;
 			stalledNotified = false;
