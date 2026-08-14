@@ -108,8 +108,7 @@ export function validateEvidence(ev: unknown): string | null {
 			if (e && typeof e === "object" && e.type === "review") {
 				if (typeof e.agent !== "string" || !e.agent)
 					return "review 证据缺 agent";
-				if (typeof e.path !== "string" || !e.path)
-					return "review 证据缺 path";
+				if (typeof e.path !== "string" || !e.path) return "review 证据缺 path";
 			}
 		}
 		return null;
@@ -320,8 +319,13 @@ export function validateGate(
 	const items = evidence?.evidence ?? [];
 	if (gate.test) {
 		const ok = items.some(
-			(e) => e && e.type === "cmd" && e.cmd && e.exit === 0,
-		);
+			(e) =>
+				e &&
+				e.type === "cmd" &&
+				typeof e.cmd === "string" &&
+				e.cmd &&
+				e.exit === 0,
+		); // typeof 守卫：effect 分支不校验 cmd 条目，防带病数据经 effect 满足 test 门禁（审计 finding-2）
 		if (!ok) {
 			return `任务 #${id} 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {"type":"cmd","cmd":"npm test","exit":0}`;
 		}
@@ -563,7 +567,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				return escalateBlock(
 					input.id,
 					"gate",
-					`${PKG}: ${gateErr}。或先单独 update（非 completed）移除该 gate 声明，快照更新后再标 completed——同一次调用里移除 gate 无效。`
+					`${PKG}: ${gateErr}。或先单独 update（非 completed）移除该 gate 声明，快照更新后再标 completed——同一次调用里移除 gate 无效。`,
 				);
 			}
 			// 放行：该任务 storm 计数复位（下次违规从 1 计）
@@ -775,7 +779,11 @@ ${list}
 			});
 			if (gated.length > 0) {
 				// 混合批次全部点名：gated 附硬门禁必复核强调，非 gated 覆盖对照验证（审计：gated 分支吞掉普通项点名）
-				text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）——其中 #${gated.join(", ")} 声明了硬门禁（test/audit），必须 spawn fresh-context reviewer subagent 独立复核（test 门禁核实测试命令与 exit 0 是否真实、audit 门禁核实 review 证据的 agent/path 审计产物）；其余完成项对照 evidence 声称验证。发现缺口当场修复后再收尾。`;
+				const others = ids.filter((id) => !gated.includes(id));
+				text =
+					others.length > 0
+						? `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）——其中 #${gated.join(", ")} 声明了硬门禁（test/audit），必须 spawn fresh-context reviewer subagent 独立复核（test 门禁核实测试命令与 exit 0 是否真实、audit 门禁核实 review 证据的 agent/path 审计产物）；其余完成项对照 evidence 声称验证。发现缺口当场修复后再收尾。`
+						: `${PKG}: 任务 #${gated.join(", ")} 声明了硬门禁（test/audit）且已放行——完成 ≠ 验证：必须 spawn fresh-context reviewer subagent 独立复核（test 门禁核实测试命令与 exit 0 是否真实、audit 门禁核实 review 证据的 agent/path 审计产物），发现缺口当场修复后再收尾。`;
 			} else {
 				text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
 subagent 独立验证（只读检查文件/测试，对照 evidence 声称），发现缺口当场修复后再收尾。`;

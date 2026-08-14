@@ -1150,6 +1150,56 @@ function toolResult(name: string, details: unknown) {
 	check("S30 要求必复核", m.sent[0]?.includes("必须 spawn"), true);
 }
 
+// ── 场景 31：⑥ 混合批次点名（gate + 普通节点同轮 completed → 文本同时点名两者；审计 blocker 锚定）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("做任务"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{
+					id: 1,
+					subject: "带门禁",
+					status: "completed",
+					metadata: { gate: { test: true } },
+				},
+				{ id: 2, subject: "普通", status: "completed" },
+			],
+			nextId: 3,
+		}),
+	];
+	// 同轮先后 completed：两条都进 pendingVerify（gate + 普通混合批次）
+	for (const id of [1, 2]) {
+		const ret = await m.fire(
+			"tool_call",
+			{
+				toolName: "todo",
+				input: {
+					action: "update",
+					id,
+					status: "completed",
+					metadata: {
+						evidence: {
+							kind: "runnable",
+							evidence: [{ type: "cmd", cmd: "npm test", exit: 0 }],
+						},
+					},
+				},
+			} as never,
+			turnCtx(branch),
+		);
+		check(`S31 任务 #${id} 放行`, ret, undefined);
+	}
+	await fireRound(m, branch, 1);
+	check("S31 ⑥ 注入一次", m.sent.length, 1);
+	check("S31 同时点名 gate 与普通", m.sent[0]?.includes("任务 #1, 2"), true);
+	check("S31 gated 附硬门禁强调", m.sent[0]?.includes("其中 #1"), true);
+	check("S31 普通项被点名覆盖", m.sent[0]?.includes("其余完成项"), true);
+}
+
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);
 	process.exit(1);

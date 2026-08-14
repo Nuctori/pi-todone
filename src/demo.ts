@@ -484,6 +484,15 @@ check(
 	}),
 	null,
 );
+// 审计锚定（finding-2）：effect 带病 cmd（非字符串）不满足 test 门禁（typeof 守卫）
+check(
+	"test 门禁 effect 带病 cmd 拦截",
+	validateGate(gateTasks, 2, {
+		kind: "effect",
+		evidence: [{ type: "cmd", cmd: 123 as never, exit: 0 }],
+	}),
+	'任务 #2 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {"type":"cmd","cmd":"npm test","exit":0}',
+);
 check(
 	"test+audit 只满足 test 拦截",
 	validateGate(gateTasks, 4, ev([{ type: "cmd", cmd: "npm test", exit: 0 }])),
