@@ -102,7 +102,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 ## 测试
 
 ```bash
-npm test    # demo 自检（60 断言）+ mock E2E（27 场景 62 断言，无模型依赖）
+npm test    # demo 自检（60 断言）+ mock E2E（28 场景 62 断言，无模型依赖）
 ```
 
 CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。

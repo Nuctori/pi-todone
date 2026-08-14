@@ -902,6 +902,98 @@ function toolResult(name: string, details: unknown) {
 	check("S27 复位后从 1 计", String(r4.reason).includes("第2次拦截"), false);
 }
 
+// ── 场景 28：并行建议依赖复查（快照竞态误记条目依赖完成后退场，不误报；v0.4.7）──
+{
+	// 公共：先 fire tool_call（依赖未完成）把任务记入 pendingParallel，再以不同快照注入
+	const fireStart = async (m: ReturnType<typeof mockPi>) => {
+		const branch = [
+			userMsg("干活"),
+			toolCall("todo", { action: "update", id: 2, status: "in_progress" }),
+			toolResult("todo", {
+				action: "update",
+				params: {},
+				tasks: [
+					{ id: 1, subject: "前置", status: "pending" },
+					{ id: 2, subject: "下游", status: "in_progress", blockedBy: [1] },
+				],
+				nextId: 3,
+			}),
+		];
+		await m.fire(
+			"tool_call",
+			{
+				toolName: "todo",
+				input: { action: "update", id: 2, status: "in_progress" },
+			} as never,
+			turnCtx(branch),
+		);
+	};
+	// A：注入时依赖已完成（并行块竞态消解）→ 不注入
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	await fireStart(m);
+	await fireRound(
+		m,
+		[
+			userMsg("干活"),
+			toolResult("todo", {
+				action: "update",
+				params: {},
+				tasks: [
+					{ id: 1, subject: "前置", status: "completed" },
+					{ id: 2, subject: "下游", status: "in_progress", blockedBy: [1] },
+				],
+				nextId: 3,
+			}),
+		],
+		1,
+	);
+	check("S28 依赖已完成不注入", m.sent.length, 0);
+	// B：注入时依赖已 deleted → 不算未完成，不注入
+	const m2 = mockPi();
+	todoneExtension(m2.pi as never);
+	await fireStart(m2);
+	await fireRound(
+		m2,
+		[
+			userMsg("干活"),
+			toolResult("todo", {
+				action: "update",
+				params: {},
+				tasks: [
+					{ id: 1, subject: "前置", status: "deleted" },
+					{ id: 2, subject: "下游", status: "in_progress", blockedBy: [1] },
+				],
+				nextId: 3,
+			}),
+		],
+		1,
+	);
+	check("S28 依赖已删除不注入", m2.sent.length, 0);
+	// C：注入时依赖仍 pending → 真跳步仍提示（回归锚定 S8 语义）
+	const m3 = mockPi();
+	todoneExtension(m3.pi as never);
+	await fireStart(m3);
+	await fireRound(
+		m3,
+		[
+			userMsg("干活"),
+			toolResult("todo", {
+				action: "update",
+				params: {},
+				tasks: [
+					{ id: 1, subject: "前置", status: "pending" },
+					{ id: 2, subject: "下游", status: "in_progress", blockedBy: [1] },
+				],
+				nextId: 3,
+			}),
+		],
+		1,
+	);
+	check("S28 真跳步仍提示", m3.sent.length, 1);
+	check("S28 提示含依赖", m3.sent[0]?.includes("#1"), true);
+}
+
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);
 	process.exit(1);

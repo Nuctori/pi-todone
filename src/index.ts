@@ -597,23 +597,35 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 - 树形：复杂任务先建根节点（目标，对照用户原话），子任务用 metadata.parentId 挂载
 （小任务豁免——若你认为这是小任务，回复一句原因即可继续）`;
 		}
-		// ③ 并行建议：跳步确认（依赖未完成就 in_progress；只提示仍存活的，陈旧 id 丢弃）
+		// ③ 并行建议：跳步确认（依赖未完成就 in_progress；只提示仍存活的，陈旧 id 丢弃；
+		//    注入前复查依赖完成状态——并行块快照竞态误记的条目在依赖完成后退场，不误报）
 		else if (pendingParallel.size > 0) {
-			const ids = [...pendingParallel].filter((id) =>
-				tasks.some((t) => t.id === id && t.status === "in_progress"),
-			);
-			if (ids.length === 0) {
-				pendingParallel.clear(); // 全部陈旧：直接丢弃
-				return;
+			const ids: number[] = [];
+			for (const id of [...pendingParallel]) {
+				const t = tasks.find((x) => x && x.id === id);
+				if (!t || t.status !== "in_progress") continue; // 已非 in_progress：陈旧
+				const deps = (t.blockedBy ?? []).filter((d) => {
+					const dep = tasks.find((x) => x && x.id === d);
+					return (
+						dep && dep.status !== "completed" && dep.status !== "deleted"
+					);
+				});
+				if (deps.length === 0) pendingParallel.delete(id); // 依赖已就绪：误记条目退场
+				else ids.push(id);
 			}
+			if (ids.length === 0) return;
 			const lines = ids
-				.slice(0, 3)
 				.map((id) => {
-					const t = tasks.find((x) => x.id === id);
+					const t = tasks.find((x) => x && x.id === id);
 					const deps = (t?.blockedBy ?? [])
-						.filter((d) =>
-							tasks.some((x) => x.id === d && x.status !== "completed"),
-						)
+						.filter((d) => {
+							const dep = tasks.find((x) => x && x.id === d);
+							return (
+								dep &&
+								dep.status !== "completed" &&
+								dep.status !== "deleted"
+							);
+						})
 						.map((d) => `#${d}`);
 					return `#${id} ${t?.subject ?? ""}（前置 ${deps.join("、")} 未完成）`;
 				})
