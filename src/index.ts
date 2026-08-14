@@ -60,7 +60,7 @@ interface SessionEntry {
 /** 读环境变量数值：缺省/非法（NaN、负数、空串）回退默认并告警——非法值静默禁用守卫是配置泄露。 */
 export function envNumber(name: string, dflt: number): number {
 	const raw = process.env[name];
-	if (raw === undefined || raw === "") return dflt;
+	if (raw === undefined || raw.trim() === "") return dflt;
 	const n = Number(raw);
 	if (!Number.isFinite(n) || n < 0) {
 		console.warn(
@@ -236,7 +236,7 @@ export function validateParentRef(
 	if (parentId === undefined || parentId === null) return null; // 根节点合法
 	if (typeof parentId !== "number")
 		return `parentId 必须是数字，实际: ${String(parentId)}`;
-	if (!tasks.some((t) => t.id === parentId))
+	if (!tasks.some((t) => t && t.id === parentId))
 		return `parentId 引用的任务 #${parentId} 不存在`;
 	return null;
 }
@@ -245,7 +245,7 @@ export function validateParentRef(
 export function canCompleteTree(tasks: TodoTask[], id: unknown): string | null {
 	if (typeof id !== "number") return `id 必须是数字，实际: ${String(id)}`; // 无法判定不放行（门禁不静默绕过）
 	const children = tasks.filter(
-		(t) => t.metadata?.parentId === id && t.status !== "deleted",
+		(t) => t && t.metadata?.parentId === id && t.status !== "deleted",
 	);
 	if (children.length === 0) return null;
 	const unfinished = children.filter((t) => t.status !== "completed");
@@ -456,12 +456,17 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		}
 		if (input.status === "in_progress") {
 			// 并行就绪：blockedBy 未完成 → 记入待确认（建议层提示，不 block）
-			const task = tasks.find((t) => t.id === input.id);
+			// 数据边界防御：AI 可能给 blockedBy 传标量/畸形值、快照条目非对象——门禁不崩、不直穿事件分发
+			const task = tasks.find((t) => t && t.id === input.id);
 			if (task && typeof input.id === "number") {
-				const deps = (task.blockedBy ?? []).filter((d) => {
-					const dep = tasks.find((t) => t.id === d);
-					return dep && dep.status !== "completed" && dep.status !== "deleted";
-				});
+				const deps = Array.isArray(task.blockedBy)
+					? task.blockedBy.filter((d) => {
+							const dep = tasks.find((t) => t && t.id === d);
+							return (
+								dep && dep.status !== "completed" && dep.status !== "deleted"
+							);
+						})
+					: [];
 				if (deps.length > 0) pendingParallel.add(input.id);
 			}
 			return;

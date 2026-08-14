@@ -563,11 +563,6 @@ function toolResult(name: string, details: unknown) {
 		(input.metadata as { evidence?: { kind?: string } }).evidence?.kind,
 		"runnable",
 	);
-	check(
-		"S18 规范化写回 metadata",
-		(input.metadata as { evidence?: { kind?: string } }).evidence?.kind,
-		"runnable",
-	);
 }
 
 // ── 场景 19：⑤证明点注入不清 pendingVerify，⑥ 之后仍触发（v0.4.3：集合交叉清理回归）──
@@ -662,7 +657,72 @@ function toolResult(name: string, details: unknown) {
 	fail = false;
 	await m.fire("agent_settled", {} as never, turnCtx(branch));
 	check("S20 同轮 settled 兜底重试成功", m.sent.length, 1);
+	fail = false;
+	check("S20 同轮 settled 兜底重试成功", m.sent.length, 1);
 	check("S20 兜底走 followUp", m.sentDeliverAs[0], "followUp");
+}
+
+// ── 场景 21：pendingParallel 陈旧 id（任务已 completed）不注入（0.4.1 无存活过滤的回归锚定）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	// 任务 2 in_progress（blockedBy [1] 未完成）→ 进 pendingParallel
+	const branch1 = [
+		userMsg("干活"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{ id: 1, subject: "前置", status: "pending" },
+				{ id: 2, subject: "下游", status: "in_progress", blockedBy: [1] },
+			],
+			nextId: 3,
+		}),
+	];
+	await m.fire(
+		"tool_call",
+		{ toolName: "todo", input: { action: "update", id: 2, status: "in_progress" } } as never,
+		turnCtx(branch1),
+	);
+	// 任务 2 已完成 → 新轮 turn_end：陈旧 id 丢弃，不注入 ③
+	const branch2 = [
+		userMsg("干活"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{ id: 1, subject: "前置", status: "completed" },
+				{ id: 2, subject: "下游", status: "completed", blockedBy: [1] },
+			],
+			nextId: 3,
+		}),
+	];
+	await fireRound(m, branch2, 1);
+	check("S21 陈旧 pendingParallel 不注入", m.sent.length, 0);
+}
+
+// ── 场景 22：畸形快照（blockedBy 标量）不崩门禁（v0.4.4：tool_call 数据边界防御）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("干活"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{ id: 1, subject: "前置", status: "pending" },
+				{ id: 2, subject: "下游", status: "in_progress", blockedBy: "1" },
+			],
+			nextId: 3,
+		}),
+	];
+	const ret = await m.fire(
+		"tool_call",
+		{ toolName: "todo", input: { action: "update", id: 2, status: "in_progress" } } as never,
+		turnCtx(branch),
+	);
+	check("S22 畸形 blockedBy 不崩", ret, undefined);
 }
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);

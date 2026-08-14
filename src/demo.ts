@@ -409,6 +409,8 @@ try {
 	check("envNumber 负数回退", envNumber(envKey, 3), 3);
 	process.env[envKey] = "";
 	check("envNumber 空串回退", envNumber(envKey, 3), 3);
+	process.env[envKey] = " ";
+	check("envNumber 空白串回退", envNumber(envKey, 3), 3);
 } finally {
 	if (envSaved === undefined) delete process.env[envKey];
 	else process.env[envKey] = envSaved;

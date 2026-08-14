@@ -98,7 +98,7 @@ The verification-duty switch (SEMANTIC_CHECK) is hard-coded (edit source to chan
 ## Tests
 
 ```bash
-npm test    # demo self-check (57 assertions) + mock E2E (18 scenarios, 42 assertions, no model needed)
+npm test    # demo self-check (58 assertions) + mock E2E (19 scenarios, 51 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.
