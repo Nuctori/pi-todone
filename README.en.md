@@ -16,7 +16,7 @@ The plugin performs **deterministic format validation only** (zero LLM cost, nev
 pi-todone's semantic boundary is a single one: **the completion duty of todos**. Everything else around todos is deliberately left outside:
 
 | Responsibility | Semantics | Where it lives |
-|---|---|---|
+| --- | --- | --- |
 | Completion duty (evidence format, idle injection, stagnation detection) | mechanical, decidable | **this plugin** (hard gate) |
 | Structure norms (result-oriented, explicit dependencies, re-plan on blockers) | semantic, undecidable | **pi-todone skill** (norm layer, AI follows voluntarily) |
 | Goal understanding (what the user wants, what counts as done) | semantic, needs decision chain | **decision-audit layer** (e.g. pi-pair decision-auditor) |
@@ -47,7 +47,7 @@ The completion duty applies only to todos that exist; the creation duty triggers
 ## Three-layer knowledge architecture (cache-safe)
 
 | Layer | Channel | Content | Cache impact |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | L1 persistent | `before_agent_start` → `promptGuidelines` append of a **compile-time constant** | 2-line duty summary | ✅ static bytes → cache hit |
 | L2 on-demand | `~/.agents/skills/pi-todone/SKILL.md` | full rules: granularity, evidence format, structure norms, verification flow | ✅ not loaded until triggered |
 | L3 enforcement | block reason + agent_end injection (`sendUserMessage`) | teaches the format on violation | ✅ message channel, never touches system prompt |
@@ -69,7 +69,7 @@ When marking a todo `completed`, submit `metadata.evidence`:
 ```
 
 | kind | Meaning | Gate rule |
-|---|---|---|
+| --- | --- | --- |
 | `state` | "file changed" | ≥1 file evidence (path required, op ∈ write/edit/delete) |
 | `runnable` | "tests/build pass" | ≥1 cmd evidence (cmd required, exit optional number) |
 | `effect` | subjective ("faster", "cleaner") | not blocked; left for human acceptance |
@@ -87,17 +87,18 @@ Common deviations are auto-normalized: evidence as single object, string JSON, m
 ## Configuration (env vars)
 
 | Variable | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `PI_TODONE_STALL_THRESHOLD` | 3 | rounds of no progress before re-examination trigger |
 | `PI_TODONE_QUIET_AFTER_MS` | 120000 | silence window after latest user message |
 | `PI_TODONE_CREATE_THRESHOLD` | 200 | tool calls in unit without any todo → creation-duty injection |
+| `PI_TODONE_COOLDOWN_BASE_MS` | 60000 | backoff base 60s ×2ⁿ (10 min cap hard-coded) |
 
-Backoff constants and the verification-duty switch are hard-coded (no knobs; edit source to change).
+The verification-duty switch (SEMANTIC_CHECK) is hard-coded (edit source to change).
 
 ## Tests
 
 ```bash
-npm test    # demo self-check (52 assertions) + mock E2E (10 scenarios, 25 assertions, no model needed)
+npm test    # demo self-check (57 assertions) + mock E2E (18 scenarios, 42 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.

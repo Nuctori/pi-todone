@@ -563,6 +563,106 @@ function toolResult(name: string, details: unknown) {
 		(input.metadata as { evidence?: { kind?: string } }).evidence?.kind,
 		"runnable",
 	);
+	check(
+		"S18 规范化写回 metadata",
+		(input.metadata as { evidence?: { kind?: string } }).evidence?.kind,
+		"runnable",
+	);
+}
+
+// ── 场景 19：⑤证明点注入不清 pendingVerify，⑥ 之后仍触发（v0.4.3：集合交叉清理回归）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("干活"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{ id: 1, subject: "任务A", status: "completed" },
+				{ id: 2, subject: "任务B", status: "pending" },
+			],
+			nextId: 3,
+		}),
+	];
+	// 任务 A 已完成（格式闸放行 → 进 pendingVerify）
+	const input = {
+		action: "update",
+		id: 1,
+		status: "completed",
+		metadata: {
+			evidence: {
+				kind: "runnable",
+				evidence: [{ type: "cmd", cmd: "echo", exit: 0 }],
+			},
+		},
+	};
+	await m.fire(
+		"tool_call",
+		{ toolName: "todo", input } as never,
+		turnCtx(branch),
+	);
+	const realNow = Date.now;
+	let fakeNow = realNow();
+	Date.now = () => fakeNow;
+	try {
+		// 轮 1：B pending → ⑤ 证明点注入（优先级高于 ⑥，但不得清 pendingVerify）
+		await fireRound(m, branch, 1);
+		check("S19 先注入证明点", m.sent[0]?.includes("还有 1 项 todo 未完成"), true);
+		fakeNow += 130_000; // 越过 120s 退避
+		// 轮 2：全部完成 → ⑥ 验证义务必须仍触发（A 的验证义务未被冲掉）
+		const branch2 = [
+			userMsg("干活"),
+			toolResult("todo", {
+				action: "update",
+				params: {},
+				tasks: [
+					{ id: 1, subject: "任务A", status: "completed" },
+					{ id: 2, subject: "任务B", status: "completed" },
+				],
+				nextId: 3,
+			}),
+		];
+		await fireRound(m, branch2, 2);
+		check("S19 ⑥ 验证义务仍触发", m.sent.length, 2);
+		check("S19 ⑥ 文本含已标记完成", m.sent[1]?.includes("已标记完成"), true);
+	} finally {
+		Date.now = realNow;
+	}
+}
+
+// ── 场景 20：turn_end 注入失败 → 同轮 agent_settled 兜底重试（v0.4.3：失败释放回合占位）──
+{
+	const m = mockPi();
+	let fail = true;
+	const origSend = m.pi.sendMessage;
+	m.pi.sendMessage = async (msg, opts) => {
+		if (fail) throw new Error("transport down");
+		return origSend(msg, opts);
+	};
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("做任务"),
+		toolCall("todo", { action: "create", subject: "任务A" }),
+		toolResult("todo", {
+			action: "create",
+			params: {},
+			tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+			nextId: 2,
+		}),
+	];
+	await m.fire("agent_start", {} as never);
+	await m.fire(
+		"turn_end",
+		{ turnIndex: 1, message: {}, toolResults: [] } as never,
+		turnCtx(branch),
+	);
+	check("S20 turn_end 失败不注入", m.sent.length, 0);
+	fail = false;
+	await m.fire("agent_settled", {} as never, turnCtx(branch));
+	check("S20 同轮 settled 兜底重试成功", m.sent.length, 1);
+	check("S20 兜底走 followUp", m.sentDeliverAs[0], "followUp");
 }
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);

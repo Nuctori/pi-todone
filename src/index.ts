@@ -367,7 +367,8 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				{ deliverAs, triggerTurn: false },
 			);
 		} catch (err) {
-			console.error(`[${PKG}] 注入失败（状态未提交，下轮重试）:`, err);
+			lastInjectedRound = -1; // 释放回合占位：同轮 agent_settled 兜底可重试（终轮回合失败不永久丢失）
+			console.error(`[${PKG}] 注入失败（状态未提交，可重试）:`, err);
 			return false;
 		}
 		lastInjectionText = text;
@@ -513,6 +514,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		const stats = unitToolStats(branch);
 		let text: string | null = null;
 		let notifyStall = false;
+		let consumed: "parallel" | "verify" | null = null; // 本轮提示消费的集合（tail 只清被消费的，防交叉清理）
 
 		// ① 停滞 → 重新审视树结构（终态通知，不重复；计数变化或用户介入后复位；
 		//    投递成功才置 stalledNotified/重置退避——失败保留，下轮重试）
@@ -556,6 +558,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			text = `${PKG}: 以下任务在前置未完成时已开始：
 ${lines}
 若是有意并行（前置项不影响本项），忽略此提示；否则先完成前置，或解除 blockedBy。`;
+			consumed = "parallel";
 		}
 		// ④ 等待间隙：有长等待（subagent/长命令）+ 有可并行 pending → 趁等待推进
 		else if (stats.hasLongWait) {
@@ -597,12 +600,15 @@ ${list}
 			}
 			text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
 subagent 独立验证（只读检查文件/测试，对照 evidence 声称），发现缺口当场修复后再收尾。`;
+			consumed = "verify";
 		}
 		if (!text) return;
-		// 投递成功才提交提示状态：失败保留（集合不清、终态不置），下轮重试
+		// 投递成功才提交提示状态：失败保留（集合不清、终态不置），下轮重试。
+		// 只清本轮消费的集合：⑤证明点/①停滞/②创建/④等待不清任何集合——
+		// 交叉清理会把 pendingVerify 的验证义务冲掉（v0.4.3 回归修复）。
 		if (await inject(text, now, deliverAs)) {
-			pendingParallel.clear();
-			pendingVerify.clear();
+			if (consumed === "parallel") pendingParallel.clear();
+			else if (consumed === "verify") pendingVerify.clear();
 			if (notifyStall) {
 				stalledNotified = true;
 				injectionStreak = 0;
