@@ -604,19 +604,24 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			for (const id of [...pendingParallel]) {
 				const t = tasks.find((x) => x && x.id === id);
 				if (!t || t.status !== "in_progress") continue; // 已非 in_progress：陈旧
-				const deps = (t.blockedBy ?? []).filter((d) => {
-					const dep = tasks.find((x) => x && x.id === d);
-					return dep && dep.status !== "completed" && dep.status !== "deleted";
-				});
+				const deps = Array.isArray(t.blockedBy)
+					? t.blockedBy.filter((d) => {
+							const dep = tasks.find((x) => x && x.id === d);
+							return (
+								dep && dep.status !== "completed" && dep.status !== "deleted"
+							);
+						})
+					: [];
 				if (deps.length === 0)
 					pendingParallel.delete(id); // 依赖已就绪：误记条目退场
 				else ids.push(id);
 			}
 			if (ids.length === 0) return;
 			const lines = ids
+				.slice(0, 3) // 消息长度上限：跳步条目多时不无限膨胀
 				.map((id) => {
 					const t = tasks.find((x) => x && x.id === id);
-					const deps = (t?.blockedBy ?? [])
+					const deps = (Array.isArray(t?.blockedBy) ? t.blockedBy : [])
 						.filter((d) => {
 							const dep = tasks.find((x) => x && x.id === d);
 							return (

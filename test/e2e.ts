@@ -318,7 +318,7 @@ function toolResult(name: string, details: unknown) {
 	check("S7 子全完成放行", ret3, undefined);
 }
 
-// ── 场景 8：并行就绪建议（依赖未完成就 in_progress → 注入确认）──
+// ── 场景 8：并行就绪建议（依赖未完成就 in_progress → 注入确认；v0.4.8 起真触发 ③ 分支）──
 {
 	const m = mockPi();
 	todoneExtension(m.pi as never);
@@ -335,9 +335,19 @@ function toolResult(name: string, details: unknown) {
 			nextId: 3,
 		}),
 	];
+	// 必须先 fire tool_call：pendingParallel 由硬闸 in_progress 分支填充（否则 ③ 不执行，旧版是空转测试）
+	await m.fire(
+		"tool_call",
+		{
+			toolName: "todo",
+			input: { action: "update", id: 2, status: "in_progress" },
+		} as never,
+		turnCtx(branch),
+	);
 	await fireRound(m, branch, 1);
 	check("S8 并行确认注入", m.sent.length, 1);
-	check("S8 文本含前置未完成", m.sent[0]?.includes("前置"), true);
+	check("S8 文本含前置未完成", m.sent[0]?.includes("前置 #1 未完成"), true);
+	check("S8 文本为③专属", m.sent[0]?.includes("以下任务在前置未完成时已开始"), true);
 }
 
 // ── 场景 9：等待间隙建议（subagent 长等待 + 可并行 pending → 注入）──
