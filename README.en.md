@@ -74,7 +74,7 @@ When marking a todo `completed`, submit `metadata.evidence`:
 | `state` | "file changed" | ≥1 file evidence (path required, op ∈ write/edit/delete) |
 | `runnable` | "tests/build pass" | ≥1 cmd evidence (cmd required, exit optional number) |
 | `effect` | subjective ("faster", "cleaner") | not blocked; left for human acceptance |
-| review | cross-audit (for gate.audit) | agent+path required; may be attached to any kind's evidence array |
+| review | cross-audit (for gate.audit) | agent+path required; attach alongside cmd/file evidence in state/runnable, or alone via effect (declaration only, human acceptance) |
 
 Common deviations are auto-normalized: evidence as single object, string JSON, missing kind (inferred from entries), bare command text, entries missing `type`. Only un-normalizable input is blocked (reason carries the full format).
 
@@ -89,7 +89,7 @@ When a node needs a **hard proof duty** (tests must pass / cross-audit required)
 | gate | completion evidence requirement |
 | --- | --- |
 | `test` | ≥1 cmd evidence with explicit `exit: 0` (plain runnable only requires exit to be a number; gate tightens it) |
-| `audit` | ≥1 `{"type":"review","agent":"<reviewer>","path":"<review artifact>"}` |
+| `audit` | ≥1 `{"type":"review","agent":"<reviewer>","path":"<review artifact>"}` (alongside cmd/file in state/runnable, or alone via effect) |
 
 - Not satisfied → **blocked** (stacked on the evidence format gate and tree integrity)
 - When a gated node completes, the verification-duty injection **escalates to mandatory re-check** (names the gate duty); a fresh-context reviewer verifies the test/audit evidence truthfulness

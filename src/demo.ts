@@ -390,25 +390,49 @@ check(
 // ── validateGate（硬门禁原语）──
 const gateTasks = [
 	{ id: 1, subject: "普通", status: "pending" },
-	{ id: 2, subject: "带测试门禁", status: "pending", metadata: { gate: { test: true } } },
-	{ id: 3, subject: "带审计门禁", status: "pending", metadata: { gate: "audit" } },
-	{ id: 4, subject: "双门禁", status: "pending", metadata: { gate: ["test", "audit"] } },
-	{ id: 5, subject: "非法 gate", status: "pending", metadata: { gate: "magic" } },
+	{
+		id: 2,
+		subject: "带测试门禁",
+		status: "pending",
+		metadata: { gate: { test: true } },
+	},
+	{
+		id: 3,
+		subject: "带审计门禁",
+		status: "pending",
+		metadata: { gate: "audit" },
+	},
+	{
+		id: 4,
+		subject: "双门禁",
+		status: "pending",
+		metadata: { gate: ["test", "audit"] },
+	},
+	{
+		id: 5,
+		subject: "非法 gate",
+		status: "pending",
+		metadata: { gate: "magic" },
+	},
 ];
 const ev = (items: unknown) => ({ kind: "runnable", evidence: items }) as never;
-check("无 gate 放行", validateGate(gateTasks, 1, ev([{ type: "file", path: "a.ts" }])), null);
+check(
+	"无 gate 放行",
+	validateGate(gateTasks, 1, ev([{ type: "file", path: "a.ts" }])),
+	null,
+);
 check("任务不存在放行", validateGate(gateTasks, 99, ev([])), null);
 check("非法 id 放行", validateGate(gateTasks, "2", ev([])), null);
 check("非法 gate 声明忽略", validateGate(gateTasks, 5, ev([])), null);
 check(
 	"test 无 exit0 拦截",
 	validateGate(gateTasks, 2, ev([{ type: "cmd", cmd: "npm test", exit: 1 }])),
-	"任务 #2 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {\"type\":\"cmd\",\"cmd\":\"npm test\",\"exit\":0}",
+	'任务 #2 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {"type":"cmd","cmd":"npm test","exit":0}',
 );
 check(
 	"test 缺 exit 拦截",
 	validateGate(gateTasks, 2, ev([{ type: "cmd", cmd: "npm test" }])),
-	"任务 #2 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {\"type\":\"cmd\",\"cmd\":\"npm test\",\"exit\":0}",
+	'任务 #2 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {"type":"cmd","cmd":"npm test","exit":0}',
 );
 check(
 	"test exit0 放行",
@@ -418,17 +442,52 @@ check(
 check(
 	"audit 无 review 拦截",
 	validateGate(gateTasks, 3, ev([{ type: "cmd", cmd: "npm test", exit: 0 }])),
-	"任务 #3 声明了 audit 硬门禁：evidence 必须含交叉审计证据 {\"type\":\"review\",\"agent\":\"<复核者>\",\"path\":\"<评审产物>\"}",
+	'任务 #3 声明了 audit 硬门禁：evidence 必须含交叉审计证据 {"type":"review","agent":"<复核者>","path":"<评审产物>"}',
 );
 check(
 	"audit review 放行",
-	validateGate(gateTasks, 3, ev([{ type: "review", agent: "reviewer", path: "r.md" }])),
+	validateGate(
+		gateTasks,
+		3,
+		ev([{ type: "review", agent: "reviewer", path: "r.md" }]),
+	),
+	null,
+);
+// 审计锚定（MED-1）：effect 的 review 条目也校验 agent/path，防 gate.audit 机械绕过
+check(
+	"effect review 缺 agent 拦截",
+	validateEvidence({ kind: "effect", evidence: [{ type: "review" }] }),
+	"review 证据缺 agent",
+);
+check(
+	"effect review 缺 path 拦截",
+	validateEvidence({
+		kind: "effect",
+		evidence: [{ type: "review", agent: "reviewer" }],
+	}),
+	"review 证据缺 path",
+);
+check(
+	"effect review 合法放行",
+	validateEvidence({
+		kind: "effect",
+		evidence: [{ type: "review", agent: "reviewer", path: "r.md" }],
+	}),
+	null,
+);
+// 审计锚定（MED-2）：review-only 走 effect 完整管线可通过 audit 门禁（agent/path 已校验）
+check(
+	"audit 门禁 effect+review 放行",
+	validateGate(gateTasks, 3, {
+		kind: "effect",
+		evidence: [{ type: "review", agent: "reviewer", path: "r.md" }],
+	}),
 	null,
 );
 check(
 	"test+audit 只满足 test 拦截",
 	validateGate(gateTasks, 4, ev([{ type: "cmd", cmd: "npm test", exit: 0 }])),
-	"任务 #4 声明了 audit 硬门禁：evidence 必须含交叉审计证据 {\"type\":\"review\",\"agent\":\"<复核者>\",\"path\":\"<评审产物>\"}",
+	'任务 #4 声明了 audit 硬门禁：evidence 必须含交叉审计证据 {"type":"review","agent":"<复核者>","path":"<评审产物>"}',
 );
 check(
 	"test+audit 全满足放行",
@@ -443,11 +502,31 @@ check(
 	null,
 );
 // parseGate 宽容解析
-check("parseGate 对象", JSON.stringify(parseGate({ test: true, audit: true })), '{"test":true,"audit":true}');
-check("parseGate 字符串", JSON.stringify(parseGate("test")), '{"test":true,"audit":false}');
-check("parseGate 数组", JSON.stringify(parseGate(["audit"])), '{"test":false,"audit":true}');
-check("parseGate 非法忽略", JSON.stringify(parseGate("magic")), '{"test":false,"audit":false}');
-check("parseGate 非真值忽略", JSON.stringify(parseGate({ test: "yes" })), '{"test":false,"audit":false}');
+check(
+	"parseGate 对象",
+	JSON.stringify(parseGate({ test: true, audit: true })),
+	'{"test":true,"audit":true}',
+);
+check(
+	"parseGate 字符串",
+	JSON.stringify(parseGate("test")),
+	'{"test":true,"audit":false}',
+);
+check(
+	"parseGate 数组",
+	JSON.stringify(parseGate(["audit"])),
+	'{"test":false,"audit":true}',
+);
+check(
+	"parseGate 非法忽略",
+	JSON.stringify(parseGate("magic")),
+	'{"test":false,"audit":false}',
+);
+check(
+	"parseGate 非真值忽略",
+	JSON.stringify(parseGate({ test: "yes" })),
+	'{"test":false,"audit":false}',
+);
 const paTasks = [
 	{ id: 1, subject: "a", status: "in_progress" },
 	{ id: 2, subject: "b", status: "completed" },

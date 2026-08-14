@@ -1049,7 +1049,11 @@ function toolResult(name: string, details: unknown) {
 		},
 	})) as { block?: boolean; reason?: string };
 	check("S29 test 门禁 exit1 block", r1.block, true);
-	check("S29 提示含 test 硬门禁", String(r1.reason).includes("test 硬门禁"), true);
+	check(
+		"S29 提示含 test 硬门禁",
+		String(r1.reason).includes("test 硬门禁"),
+		true,
+	);
 	// 补 exit 0 → 放行
 	const r2 = await fire({
 		action: "update",
@@ -1076,7 +1080,11 @@ function toolResult(name: string, details: unknown) {
 		},
 	})) as { block?: boolean; reason?: string };
 	check("S29 audit 门禁无 review block", r3.block, true);
-	check("S29 提示含 audit 硬门禁", String(r3.reason).includes("audit 硬门禁"), true);
+	check(
+		"S29 提示含 audit 硬门禁",
+		String(r3.reason).includes("audit 硬门禁"),
+		true,
+	);
 	// 补 review → 放行
 	const r4 = await fire({
 		action: "update",

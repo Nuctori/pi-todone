@@ -102,7 +102,17 @@ export function validateEvidence(ev: unknown): string | null {
 	}
 	if (kind === "effect") {
 		// 效果类不可硬验证，仅要求证据数组形态（可空），留人工验收
-		return Array.isArray(list) ? null : "effect 类 evidence 必须是数组";
+		// review 条目仍校验 agent/path：防 {kind:"effect",evidence:[{type:"review"}]} 机械绕过 gate.audit 必填保证（审计 MED-1）
+		if (!Array.isArray(list)) return "effect 类 evidence 必须是数组";
+		for (const e of list) {
+			if (e && typeof e === "object" && e.type === "review") {
+				if (typeof e.agent !== "string" || !e.agent)
+					return "review 证据缺 agent";
+				if (typeof e.path !== "string" || !e.path)
+					return "review 证据缺 path";
+			}
+		}
+		return null;
 	}
 	if (!Array.isArray(list) || list.length === 0) {
 		return `${kind} 类至少需要 1 条证据`;
@@ -309,7 +319,9 @@ export function validateGate(
 	if (!gate.test && !gate.audit) return null;
 	const items = evidence?.evidence ?? [];
 	if (gate.test) {
-		const ok = items.some((e) => e && e.type === "cmd" && e.cmd && e.exit === 0);
+		const ok = items.some(
+			(e) => e && e.type === "cmd" && e.cmd && e.exit === 0,
+		);
 		if (!ok) {
 			return `任务 #${id} 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {"type":"cmd","cmd":"npm test","exit":0}`;
 		}
@@ -322,8 +334,6 @@ export function validateGate(
 	}
 	return null;
 }
-
-/** 剪枝集合：只保留在当前快照中仍处于指定状态的任务 id（就地删除，调用方持有引用不变）。
 
 /** 剪枝集合：只保留在当前快照中仍处于指定状态的任务 id（就地删除，调用方持有引用不变）。
  * 纯函数，可单测。不依赖注入路径——交互静默/退避窗口内集合只增不减是无界增长。 */
@@ -553,7 +563,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				return escalateBlock(
 					input.id,
 					"gate",
-					`${PKG}: ${gateErr}。或先 update 移除该 gate 声明（撤销义务需明确）。`,
+					`${PKG}: ${gateErr}。或先单独 update（非 completed）移除该 gate 声明，快照更新后再标 completed——同一次调用里移除 gate 无效。`
 				);
 			}
 			// 放行：该任务 storm 计数复位（下次违规从 1 计）
@@ -758,11 +768,14 @@ ${list}
 			// gate 节点：验证义务提升为必复核，点名硬门禁义务
 			const gated = ids.filter((id) => {
 				const t = tasks.find((x) => x && x.id === id);
-				const g = t ? parseGate(t.metadata?.gate) : { test: false, audit: false };
+				const g = t
+					? parseGate(t.metadata?.gate)
+					: { test: false, audit: false };
 				return g.test || g.audit;
 			});
 			if (gated.length > 0) {
-				text = `${PKG}: 任务 #${gated.join(", ")} 声明了硬门禁（test/audit）且已放行——完成 ≠ 验证：必须 spawn fresh-context reviewer subagent 独立复核（test 门禁核实测试命令与 exit 0 是否真实、audit 门禁核实 review 证据的 agent/path 审计产物），发现缺口当场修复后再收尾。`;
+				// 混合批次全部点名：gated 附硬门禁必复核强调，非 gated 覆盖对照验证（审计：gated 分支吞掉普通项点名）
+				text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）——其中 #${gated.join(", ")} 声明了硬门禁（test/audit），必须 spawn fresh-context reviewer subagent 独立复核（test 门禁核实测试命令与 exit 0 是否真实、audit 门禁核实 review 证据的 agent/path 审计产物）；其余完成项对照 evidence 声称验证。发现缺口当场修复后再收尾。`;
 			} else {
 				text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
 subagent 独立验证（只读检查文件/测试，对照 evidence 声称），发现缺口当场修复后再收尾。`;

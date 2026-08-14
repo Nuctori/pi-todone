@@ -76,7 +76,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 | `state` | "X 文件已改" | ≥1 条 file 证据（path 必填，op ∈ write/edit/delete） |
 | `runnable` | "测试通过/构建成功" | ≥1 条 cmd 证据（cmd 必填，exit 可选数字） |
 | `effect` | "性能提升/更清晰" | 不拦截，留人工验收 |
-| review | 交叉审计（gate.audit 用） | agent+path 必填；可附加在任何 kind 的证据数组里 |
+| review | 交叉审计（gate.audit 用） | agent+path 必填；附于 state/runnable 时与 cmd/file 证据同附，单独出现须走 effect（仅声明，留人工验收） |
 
 常见偏差自动归一化：evidence 单对象、字符串 JSON、缺 kind（按条目推断）、裸命令文本、条目缺 type。只有完全无法归一化才 block（reason 含完整格式）。
 
@@ -91,7 +91,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 | gate | 完成证据要求 |
 | --- | --- |
 | `test` | ≥1 条 cmd 证据且 exit 显式为 0（普通 runnable 只要求 exit 是数字，gate 加严） |
-| `audit` | ≥1 条 `{"type":"review","agent":"<复核者>","path":"<评审产物>"}` |
+| `audit` | ≥1 条 `{"type":"review","agent":"<复核者>","path":"<评审产物>"}`（与 cmd/file 同附于 state/runnable，或单独走 effect） |
 
 - 不满足 → **block**（与 evidence 格式闸、树完整性叠加）
 - gate 节点完成 → 验证义务注入**提升为必复核**（点名硬门禁义务），由 fresh-context reviewer 核实测试/审计证据真实性
