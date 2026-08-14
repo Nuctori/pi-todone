@@ -347,7 +347,11 @@ function toolResult(name: string, details: unknown) {
 	await fireRound(m, branch, 1);
 	check("S8 并行确认注入", m.sent.length, 1);
 	check("S8 文本含前置未完成", m.sent[0]?.includes("前置 #1 未完成"), true);
-	check("S8 文本为③专属", m.sent[0]?.includes("以下任务在前置未完成时已开始"), true);
+	check(
+		"S8 文本为③专属",
+		m.sent[0]?.includes("以下任务在前置未完成时已开始"),
+		true,
+	);
 }
 
 // ── 场景 9：等待间隙建议（subagent 长等待 + 可并行 pending → 注入）──
