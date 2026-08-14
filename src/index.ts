@@ -589,7 +589,7 @@ ${list}
 		else if (SEMANTIC_CHECK && pendingVerify.size > 0) {
 			// 只提示仍 completed 的；被改回 pending/deleted 的陈旧 id 直接丢弃
 			const ids = [...pendingVerify].filter((id) =>
-			tasks.some((t) => t.id === id && t.status === "completed"),
+				tasks.some((t) => t.id === id && t.status === "completed"),
 			);
 			if (ids.length === 0) {
 				pendingVerify.clear();
