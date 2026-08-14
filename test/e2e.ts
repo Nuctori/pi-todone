@@ -1008,6 +1008,140 @@ function toolResult(name: string, details: unknown) {
 	check("S28 提示含依赖", m3.sent[0]?.includes("#1"), true);
 }
 
+// ── 场景 29：gate 硬门禁（声明 test/audit 的节点完成须满足对应证据；v0.5.0）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("干活"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{
+					id: 1,
+					subject: "带测试门禁",
+					status: "in_progress",
+					metadata: { gate: { test: true } },
+				},
+				{
+					id: 2,
+					subject: "带审计门禁",
+					status: "in_progress",
+					metadata: { gate: "audit" },
+				},
+			],
+			nextId: 3,
+		}),
+	];
+	const fire = (input: unknown) =>
+		m.fire("tool_call", { toolName: "todo", input } as never, turnCtx(branch));
+	// test 门禁：cmd 证据 exit 1 → block
+	const r1 = (await fire({
+		action: "update",
+		id: 1,
+		status: "completed",
+		metadata: {
+			evidence: {
+				kind: "runnable",
+				evidence: [{ type: "cmd", cmd: "npm test", exit: 1 }],
+			},
+		},
+	})) as { block?: boolean; reason?: string };
+	check("S29 test 门禁 exit1 block", r1.block, true);
+	check("S29 提示含 test 硬门禁", String(r1.reason).includes("test 硬门禁"), true);
+	// 补 exit 0 → 放行
+	const r2 = await fire({
+		action: "update",
+		id: 1,
+		status: "completed",
+		metadata: {
+			evidence: {
+				kind: "runnable",
+				evidence: [{ type: "cmd", cmd: "npm test", exit: 0 }],
+			},
+		},
+	});
+	check("S29 test 门禁 exit0 放行", r2, undefined);
+	// audit 门禁：无 review → block
+	const r3 = (await fire({
+		action: "update",
+		id: 2,
+		status: "completed",
+		metadata: {
+			evidence: {
+				kind: "runnable",
+				evidence: [{ type: "cmd", cmd: "npm test", exit: 0 }],
+			},
+		},
+	})) as { block?: boolean; reason?: string };
+	check("S29 audit 门禁无 review block", r3.block, true);
+	check("S29 提示含 audit 硬门禁", String(r3.reason).includes("audit 硬门禁"), true);
+	// 补 review → 放行
+	const r4 = await fire({
+		action: "update",
+		id: 2,
+		status: "completed",
+		metadata: {
+			evidence: {
+				kind: "runnable",
+				evidence: [
+					{ type: "review", agent: "reviewer", path: "/tmp/r.md" },
+					{ type: "cmd", cmd: "npm test", exit: 0 },
+				],
+			},
+		},
+	});
+	check("S29 audit 门禁 review 放行", r4, undefined);
+}
+
+// ── 场景 30：⑥ 验证义务对 gate 节点强化措辞（必复核，点名硬门禁；v0.5.0）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("做任务"),
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{
+					id: 1,
+					subject: "带门禁",
+					status: "completed",
+					metadata: { gate: { test: true, audit: true } },
+				},
+			],
+			nextId: 2,
+		}),
+	];
+	const evidence = {
+		kind: "runnable",
+		evidence: [
+			{ type: "cmd", cmd: "npm test", exit: 0 },
+			{ type: "review", agent: "reviewer", path: "r.md" },
+		],
+	};
+	const ret = await m.fire(
+		"tool_call",
+		{
+			toolName: "todo",
+			input: {
+				action: "update",
+				id: 1,
+				status: "completed",
+				metadata: { evidence },
+			},
+		} as never,
+		turnCtx(branch),
+	);
+	check("S30 gate 节点放行", ret, undefined);
+	await fireRound(m, branch, 1);
+	check("S30 ⑥ 注入一次", m.sent.length, 1);
+	check("S30 强化措辞点名硬门禁", m.sent[0]?.includes("硬门禁"), true);
+	check("S30 要求必复核", m.sent[0]?.includes("必须 spawn"), true);
+}
+
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);
 	process.exit(1);

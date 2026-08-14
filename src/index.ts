@@ -3,13 +3,15 @@
  *
  * 三问三答：状态迁移合法吗（硬闸）？执行高效吗（建议器）？结构清楚吗（知识层）？
  *
- * 硬闸层（tool_call，2 个，全部机械可判定）：
+ * 硬闸层（tool_call，3 个，全部机械可判定）：
  * 1. evidence 格式闸：todo 标 completed 必须附 metadata.evidence（宽容归一化，无法归一化才 block）
  * 2. 树完整性：create 带 parentId 必须存在于快照；completed 时子项（parentId=自己，跳过 deleted）
  *    必须全 completed——"目标假完成"被机械拦截
+ * 3. gate 硬门禁（节点级硬证明义务）：create 声明 metadata.gate（test→cmd 证据 exit 显式 0；
+ *    audit→review 交叉审计证据），completed 时不满足 → block。拦忘记/格式错，不拦谎报（真实性靠 ⑥ 复核）
  *
  * 建议层（agent_end，1 个统一注入器，customType 标记防自反馈）：
- *   按优先级给一条：停滞重审视 > 创建义务 > 并行建议（跳步确认/等待间隙）> 证明点 > 验证义务
+ *   按优先级给一条：停滞重审视 > 创建义务 > 并行建议（跳步确认/等待间隙）> 证明点 > 验证义务（gate 节点提升为必复核）
  *
  * 知识层：L1 静态义务摘要（编译期常量，缓存安全）+ skill（~/.agents/skills/pi-todone/SKILL.md）
  *
@@ -34,6 +36,7 @@ interface EvidenceItem {
 	op?: string;
 	cmd?: string;
 	exit?: number;
+	agent?: string; // review 证据：复核者 agent 名
 }
 interface Evidence {
 	kind?: string;
@@ -120,8 +123,12 @@ export function validateEvidence(ev: unknown): string | null {
 				return "cmd 证据 exit 必须为数字";
 			}
 			hasCmd = true;
+		} else if (e.type === "review") {
+			// 交叉审计证据（gate.audit 硬门禁用）：agent 名 + 评审产物路径必填
+			if (typeof e.agent !== "string" || !e.agent) return "review 证据缺 agent";
+			if (typeof e.path !== "string" || !e.path) return "review 证据缺 path";
 		} else {
-			return `证据 type 必须是 file|cmd，实际: ${String(e.type)}`;
+			return `证据 type 必须是 file|cmd|review，实际: ${String(e.type)}`;
 		}
 	}
 	if (kind === "state" && !hasFile) return "state 类必须有 file 证据";
@@ -203,7 +210,7 @@ const EVIDENCE_GUIDE = `todo 标 completed 必须附 metadata.evidence（JSON）
 
 /** L1 常驻义务摘要：编译期常量，严禁任何动态内容（字节变化会破 system prompt 缓存前缀）。 */
 const TODO_DUTY_LINE =
-	"Todo 义务（pi-todone）：复杂任务（多文件/3+ 步骤/长任务）开始前先拆 todo，每项是一个可独立验证的结果（≤ 一句话）；小任务（单文件小改/问答）无需列。标 todo completed 必须附 metadata.evidence（state→file 证据 / runnable→cmd 证据 / effect 留人工验收）；树形任务：父 completed 前子项必须全 completed；详见 pi-todone skill。";
+	"Todo 义务（pi-todone）：复杂任务（多文件/3+ 步骤/长任务）开始前先拆 todo，每项是一个可独立验证的结果（≤ 一句话）；小任务（单文件小改/问答）无需列。标 todo completed 必须附 metadata.evidence（state→file 证据 / runnable→cmd 证据 / effect 留人工验收）；节点可声明 metadata.gate 硬门禁（test→需 cmd 证据 exit 0 / audit→需交叉审计 review 证据），声明即义务；树形任务：父 completed 前子项必须全 completed；详见 pi-todone skill。";
 
 /** 扫描会话分支，返回最新 todo 工具结果快照（todo-enforcer 同款模式，纯读）。 */
 export function scanTodoSnapshot(
@@ -262,6 +269,61 @@ export function canCompleteTree(tasks: TodoTask[], id: unknown): string | null {
 	}
 	return null;
 }
+
+/** 宽容解析 metadata.gate：对象 {test,audit} 布尔、字符串 "test"/"audit"、或数组。非法值忽略（无约束）。纯函数。 */
+export function parseGate(raw: unknown): { test: boolean; audit: boolean } {
+	const g = { test: false, audit: false };
+	if (typeof raw === "string") {
+		if (raw === "test") g.test = true;
+		else if (raw === "audit") g.audit = true;
+		return g;
+	}
+	if (Array.isArray(raw)) {
+		for (const v of raw) {
+			if (v === "test") g.test = true;
+			else if (v === "audit") g.audit = true;
+		}
+		return g;
+	}
+	if (raw && typeof raw === "object") {
+		const o = raw as Record<string, unknown>;
+		if (o.test === true) g.test = true;
+		if (o.audit === true) g.audit = true;
+	}
+	return g;
+}
+
+/** gate 硬门禁：按快照任务声明的 metadata.gate 校验完成证据。纯函数，可单测。
+ * test → 至少 1 条 cmd 证据且 exit 显式为 0（不匹配具体命令，零误伤——拦"忘记附测试证据"，不拦谎报，真实性由 ⑥ 复核兜底）；
+ * audit → 至少 1 条 review 证据（agent/path 已由 validateEvidence 保证非空）。
+ * 任务不存在/未声明 gate/非法 id → 无约束放行。 */
+export function validateGate(
+	tasks: TodoTask[],
+	id: unknown,
+	evidence: Evidence | null,
+): string | null {
+	if (typeof id !== "number") return null;
+	const task = tasks.find((t) => t && t.id === id);
+	if (!task) return null;
+	const gate = parseGate(task.metadata?.gate);
+	if (!gate.test && !gate.audit) return null;
+	const items = evidence?.evidence ?? [];
+	if (gate.test) {
+		const ok = items.some((e) => e && e.type === "cmd" && e.cmd && e.exit === 0);
+		if (!ok) {
+			return `任务 #${id} 声明了 test 硬门禁：evidence 必须含 cmd 证据且 exit 显式为 0（测试真实通过），如 {"type":"cmd","cmd":"npm test","exit":0}`;
+		}
+	}
+	if (gate.audit) {
+		const ok = items.some((e) => e && e.type === "review");
+		if (!ok) {
+			return `任务 #${id} 声明了 audit 硬门禁：evidence 必须含交叉审计证据 {"type":"review","agent":"<复核者>","path":"<评审产物>"}`;
+		}
+	}
+	return null;
+}
+
+/** 剪枝集合：只保留在当前快照中仍处于指定状态的任务 id（就地删除，调用方持有引用不变）。
 
 /** 剪枝集合：只保留在当前快照中仍处于指定状态的任务 id（就地删除，调用方持有引用不变）。
  * 纯函数，可单测。不依赖注入路径——交互静默/退避窗口内集合只增不减是无界增长。 */
@@ -485,6 +547,15 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 					`${PKG}: 完成证明缺失（${error}）。${EVIDENCE_GUIDE}`,
 				);
 			}
+			// gate 硬门禁：按快照任务声明的 metadata.gate 校验（evidence 格式合规后）
+			const gateErr = validateGate(tasks, input.id, evidence);
+			if (gateErr) {
+				return escalateBlock(
+					input.id,
+					"gate",
+					`${PKG}: ${gateErr}。或先 update 移除该 gate 声明（撤销义务需明确）。`,
+				);
+			}
 			// 放行：该任务 storm 计数复位（下次违规从 1 计）
 			if (typeof input.id === "number") blockStorm.delete(input.id);
 			// 规范化写回：尽力而为——输入可能被冻结/只读，失败只损失落库格式，不阻断放行、不抛给事件分发
@@ -503,9 +574,10 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		if (input.status === "in_progress") {
 			// 并行就绪：blockedBy 未完成 → 记入待确认（建议层提示，不 block）
 			// 数据边界防御：AI 可能给 blockedBy 传标量/畸形值、快照条目非对象——门禁不崩、不直穿事件分发
+			// 状态变更=agent 在行动，storm 计数复位（快照找不到任务也复位——v0.4.8 承诺兑现）
+			if (typeof input.id === "number") blockStorm.delete(input.id);
 			const task = tasks.find((t) => t && t.id === input.id);
 			if (task && typeof input.id === "number") {
-				blockStorm.delete(input.id); // 状态变更=agent 在行动，storm 计数复位
 				const deps = Array.isArray(task.blockedBy)
 					? task.blockedBy.filter((d) => {
 							const dep = tasks.find((t) => t && t.id === d);
@@ -530,11 +602,12 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 		deliverAs: "steer" | "followUp",
 	): Promise<void> {
 		const snapshot = scanTodoSnapshot(branch);
+		// 数据边界防御：快照条目可能非对象（v0.4.4 确立原则，建议层同样适用）
 		const tasks = snapshot
-			? snapshot.tasks.filter((t) => t.status !== "deleted")
+			? snapshot.tasks.filter((t) => t && t.status !== "deleted")
 			: [];
 		const incomplete = tasks.filter(
-			(t) => t.status === "pending" || t.status === "in_progress",
+			(t) => t && (t.status === "pending" || t.status === "in_progress"),
 		);
 
 		// 集合与当前快照对齐（不依赖注入路径：交互静默/退避窗口内也剪枝，防无界增长；
@@ -640,8 +713,15 @@ ${lines}
 		// ④ 等待间隙：有长等待（subagent/长命令）+ 有可并行 pending → 趁等待推进
 		else if (stats.hasLongWait) {
 			const parallelizable = incomplete.filter((t) => {
-				const deps = (t.blockedBy ?? []).filter((d) =>
-					tasks.some((x) => x.id === d && x.status !== "completed"),
+				const deps = (Array.isArray(t.blockedBy) ? t.blockedBy : []).filter(
+					(d) =>
+						tasks.some(
+							(x) =>
+								x &&
+								x.id === d &&
+								x.status !== "completed" &&
+								x.status !== "deleted", // deleted 依赖不算阻塞（与 ③ 语义一致）
+						),
 				);
 				return deps.length === 0;
 			});
@@ -669,14 +749,24 @@ ${list}
 		else if (SEMANTIC_CHECK && pendingVerify.size > 0) {
 			// 只提示仍 completed 的；被改回 pending/deleted 的陈旧 id 直接丢弃
 			const ids = [...pendingVerify].filter((id) =>
-				tasks.some((t) => t.id === id && t.status === "completed"),
+				tasks.some((t) => t && t.id === id && t.status === "completed"),
 			);
 			if (ids.length === 0) {
 				pendingVerify.clear();
 				return;
 			}
-			text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
+			// gate 节点：验证义务提升为必复核，点名硬门禁义务
+			const gated = ids.filter((id) => {
+				const t = tasks.find((x) => x && x.id === id);
+				const g = t ? parseGate(t.metadata?.gate) : { test: false, audit: false };
+				return g.test || g.audit;
+			});
+			if (gated.length > 0) {
+				text = `${PKG}: 任务 #${gated.join(", ")} 声明了硬门禁（test/audit）且已放行——完成 ≠ 验证：必须 spawn fresh-context reviewer subagent 独立复核（test 门禁核实测试命令与 exit 0 是否真实、audit 门禁核实 review 证据的 agent/path 审计产物），发现缺口当场修复后再收尾。`;
+			} else {
+				text = `${PKG}: 任务 #${ids.join(", ")} 已标记完成（格式闸通过）。完成 ≠ 验证：请 spawn 一个 fresh-context reviewer
 subagent 独立验证（只读检查文件/测试，对照 evidence 声称），发现缺口当场修复后再收尾。`;
+			}
 			consumed = "verify";
 		}
 		if (!text) return;

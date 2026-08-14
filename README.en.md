@@ -6,6 +6,7 @@ Todo completion duty gate + proof-point protocol. Minimal intervention against A
 - **Proof-point protocol**: when the agent idles with pending todos → inject "prove this round's progress | explain the blocker | continue"; on prolonged stagnation → trigger re-examination (blocker report).
 - **Creation duty**: complex units (≥200 tool calls) that never created any todo → inject "break down todos first" (with granularity rules); small tasks exempt.
 - **Verification duty**: format-valid completions → inject "spawn a fresh reviewer subagent" for semantic verification by the subagent family of LLMs.
+- **Hard gate (gate primitive)**: declare `metadata.gate` at create time (`{"test":true}` / `"audit"` / `["test","audit"]`); `test` → completion evidence must include a cmd entry with explicit `exit: 0`; `audit` → must include a review evidence entry (agent+path); otherwise → **blocked**. Declared is obliged — prevents "forgetting this node needs special proof" (stops forgetting/format errors, not lying — truthfulness is re-checked by the verification-duty fresh reviewer)
 
 The plugin performs **deterministic format validation only** (zero LLM cost, never hallucinates). Semantic verification → independent subagents (collusion-resistant).
 
@@ -73,8 +74,27 @@ When marking a todo `completed`, submit `metadata.evidence`:
 | `state` | "file changed" | ≥1 file evidence (path required, op ∈ write/edit/delete) |
 | `runnable` | "tests/build pass" | ≥1 cmd evidence (cmd required, exit optional number) |
 | `effect` | subjective ("faster", "cleaner") | not blocked; left for human acceptance |
+| review | cross-audit (for gate.audit) | agent+path required; may be attached to any kind's evidence array |
 
 Common deviations are auto-normalized: evidence as single object, string JSON, missing kind (inferred from entries), bare command text, entries missing `type`. Only un-normalizable input is blocked (reason carries the full format).
+
+## Hard gate (gate primitive)
+
+When a node needs a **hard proof duty** (tests must pass / cross-audit required), declare it at create time; the plugin checks mechanically on completion:
+
+```json
+{ "action": "create", "subject": "Implement X", "metadata": { "gate": {"test": true, "audit": true} } }
+```
+
+| gate | completion evidence requirement |
+| --- | --- |
+| `test` | ≥1 cmd evidence with explicit `exit: 0` (plain runnable only requires exit to be a number; gate tightens it) |
+| `audit` | ≥1 `{"type":"review","agent":"<reviewer>","path":"<review artifact>"}` |
+
+- Not satisfied → **blocked** (stacked on the evidence format gate and tree integrity)
+- When a gated node completes, the verification-duty injection **escalates to mandatory re-check** (names the gate duty); a fresh-context reviewer verifies the test/audit evidence truthfulness
+- Gate is orthogonal to `blockedBy`: blockedBy governs order (dependency readiness), gate governs completion conditions (proof duty) — together they are the workflow inside todos
+- Anti-forgery boundary: the gate is a mechanical check — it stops "forgot the evidence / format errors", not "lied about exit 0" — truthfulness is backed by the verification-duty independent review (the plugin never verifies truthfulness, see Design Philosophy)
 
 ## Loop protection
 
@@ -99,7 +119,7 @@ The verification-duty switch (SEMANTIC_CHECK) is hard-coded (edit source to chan
 ## Tests
 
 ```bash
-npm test    # demo self-check (60 assertions) + mock E2E (28 scenarios, 63 assertions, no model needed)
+npm test    # demo self-check (79 assertions) + mock E2E (30 scenarios, 81 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.
