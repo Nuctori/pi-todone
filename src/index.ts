@@ -371,6 +371,24 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 	let currentRound = 0; // 回合号：agent_start 递增（回合级守卫用）
 	let lastInjectedRound = -1; // 已注入的回合号（同回合多轮 turn_end 只注入一次）
 	let lastStallRound = -1; // 停滞计数已更新的回合号（同回合多轮只计一次）
+	// block-storm 抑制：同一任务同一原因连续 block 计数（模型反复重试同一违规烧工具预算——审计见 dag-core 19 连 block）
+	const blockStorm = new Map<number, { key: string; count: number }>();
+	function escalateBlock(
+		id: unknown,
+		key: string,
+		reason: string,
+	): { block: true; reason: string } {
+		if (typeof id !== "number") return { block: true, reason };
+		const prev = blockStorm.get(id);
+		if (prev && prev.key === key) prev.count++;
+		else blockStorm.set(id, { key, count: 1 });
+		const n = blockStorm.get(id)!.count;
+		const hint =
+			n >= 2
+				? `[第${n}次拦截同一调用] 停止重试同格式：按上方格式补合规 evidence 重试，或将任务标回 pending（update status=pending）。`
+				: "";
+		return { block: true, reason: hint + reason };
+	}
 
 	/** 注入一条建议（customType 标记：静默/统计排除自身，防自反馈循环）。
 	 * deliverAs: steer=回合内投递（下次 LLM 调用前，agent 本回合消化，不产生新回合）；
@@ -447,10 +465,11 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			// 树完整性：子项（跳过 deleted）全 completed 才能 completed
 			const treeErr = canCompleteTree(tasks, input.id);
 			if (treeErr) {
-				return {
-					block: true,
-					reason: `${PKG}: ${treeErr}。先完成子任务，或将其标回 pending/deleted。`,
-				};
+				return escalateBlock(
+					input.id,
+					"tree",
+					`${PKG}: ${treeErr}。先完成子任务，或将其标回 pending/deleted。`,
+				);
 			}
 			// evidence 格式闸：判定用纯函数，不依赖输入可变性；顶层 evidence 与 metadata 缺失时回退一致
 			const meta0 = input.metadata as Record<string, unknown> | undefined;
@@ -460,11 +479,14 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 					: input.evidence;
 			const { evidence, error } = normalizeEvidence(raw);
 			if (error) {
-				return {
-					block: true,
-					reason: `${PKG}: 完成证明缺失（${error}）。${EVIDENCE_GUIDE}`,
-				};
+				return escalateBlock(
+					input.id,
+					"evidence",
+					`${PKG}: 完成证明缺失（${error}）。${EVIDENCE_GUIDE}`,
+				);
 			}
+			// 放行：该任务 storm 计数复位（下次违规从 1 计）
+			if (typeof input.id === "number") blockStorm.delete(input.id);
 			// 规范化写回：尽力而为——输入可能被冻结/只读，失败只损失落库格式，不阻断放行、不抛给事件分发
 			try {
 				const meta = meta0 && typeof meta0 === "object" ? meta0 : {};
@@ -483,6 +505,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			// 数据边界防御：AI 可能给 blockedBy 传标量/畸形值、快照条目非对象——门禁不崩、不直穿事件分发
 			const task = tasks.find((t) => t && t.id === input.id);
 			if (task && typeof input.id === "number") {
+				blockStorm.delete(input.id); // 状态变更=agent 在行动，storm 计数复位
 				const deps = Array.isArray(task.blockedBy)
 					? task.blockedBy.filter((d) => {
 							const dep = tasks.find((t) => t && t.id === d);
@@ -495,6 +518,8 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 			}
 			return;
 		}
+		// 其他状态（pending 等）：非 block update，storm 计数复位
+		if (typeof input.id === "number") blockStorm.delete(input.id);
 	});
 
 	// ── 建议层（turn_end：回合内注入——agent 消化提示后再收尾，汇报与提示一体，

@@ -836,6 +836,41 @@ function toolResult(name: string, details: unknown) {
 	await fireRound(m, branch, 1);
 	check("S26 重复注册只注入一次", m.sent.length, 1);
 }
+// ── 场景 27：block-storm 抑制（同一任务同一原因连续 block ≥2 附强提示；v0.4.6）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const noEvidence = { action: "update", id: 1, status: "completed" };
+	const r1 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+		block?: boolean;
+		reason?: string;
+	};
+	check("S27 第 1 次 block", r1.block, true);
+	check("S27 第 1 次无风暴提示", String(r1.reason).includes("第2次拦截"), false);
+	const r2 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+		block?: boolean;
+		reason?: string;
+	};
+	check("S27 第 2 次仍 block", r2.block, true);
+	check("S27 第 2 次附风暴提示", String(r2.reason).includes("第2次拦截同一调用"), true);
+	check("S27 提示含逃生口", String(r2.reason).includes("标回 pending"), true);
+	const r3 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+		block?: boolean;
+		reason?: string;
+	};
+	check("S27 第 3 次计数递增", String(r3.reason).includes("第3次拦截同一调用"), true);
+	// 非 block 的状态变更 → 计数复位
+	const ok = await m.fire(
+		"tool_call",
+		{ toolName: "todo", input: { action: "update", id: 1, status: "pending" } } as never,
+	);
+	check("S27 pending 回退放行", (ok as { block?: boolean })?.block, undefined);
+	const r4 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+		block?: boolean;
+		reason?: string;
+	};
+	check("S27 复位后从 1 计", String(r4.reason).includes("第2次拦截"), false);
+}
 
 if (failed > 0) {
 	console.error(`\n${failed} 断言失败`);

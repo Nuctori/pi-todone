@@ -2,7 +2,7 @@
 
 todo 状态机守护：完成义务闸 + 树完整性 + 证明点协议 + 并行建议。针对 AI 长自主任务偷懒（提前停、空转、随便 done、不拆任务、埋头苦等）的最小干预。
 
-- **格式闸**：`todo` 标 `completed` 必须附 `metadata.evidence`（JSON），格式不合规 → **block**（宽容归一化，无法归一化才 block）
+- **格式闸**：`todo` 标 `completed` 必须附 `metadata.evidence`（JSON），格式不合规 → **block**（宽容归一化，无法归一化才 block）；同一任务同一原因连续 block ≥2 次 → block 消息附强提示（停止重试同格式 / 标回 pending 逃生口），防模型反复重试同一违规烧工具预算
 - **树完整性**：子节点挂到不存在的父 → block；父 `completed` 时子任务未完成 → block（目标不能假完成）
 - **证明点协议**：agent 空闲且有 pending todo → 注入"证明本轮进展 | 说明卡点 | 继续"；连续无进展 → 触发重新审视树结构
 - **创建义务**：复杂任务（本单元 ≥200 次工具调用）但完全没拆 todo → 注入"请先拆 todo"（树形 + 粒度规范）；小任务豁免
@@ -86,6 +86,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 - 交互静默：最近 2 分钟有用户消息时不注入（不打扰正常对话）
 - customType 排除：注入消息带 `pi-todone` 标记，静默/单元统计跳过自身（防自反馈循环）
 - 幂等注入：promptGuidelines 同文本不重复追加
+- block-storm 抑制：同一任务同一原因连续拦截计数，第 2 次起 block 消息前缀 `[第 N 次拦截同一调用]` + 逃生口（补 evidence 重试 / 标回 pending）；任何非 block 的 update 复位计数
 
 ## 配置（环境变量）
 
@@ -101,7 +102,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 ## 测试
 
 ```bash
-npm test    # demo 自检（60 断言）+ mock E2E（26 场景 58 断言，无模型依赖）
+npm test    # demo 自检（60 断言）+ mock E2E（27 场景 62 断言，无模型依赖）
 ```
 
 CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。

@@ -2,7 +2,7 @@
 
 Todo completion duty gate + proof-point protocol. Minimal intervention against AI laziness in long autonomous tasks (early stop, idling, marking things done without doing them, skipping task breakdown).
 
-- **Format gate**: marking a `todo` `completed` requires `metadata.evidence` (JSON). Non-conforming → **blocked**, the AI must supply proof before `done`.
+- **Format gate**: marking a `todo` `completed` requires `metadata.evidence` (JSON). Non-conforming → **blocked**, the AI must supply proof before `done`. Consecutive blocks for the same task & reason (≥2) prepend a strong hint (stop retrying the same shape / escape hatch: set status back to `pending`) — prevents burning the tool budget on repeated identical violations
 - **Proof-point protocol**: when the agent idles with pending todos → inject "prove this round's progress | explain the blocker | continue"; on prolonged stagnation → trigger re-examination (blocker report).
 - **Creation duty**: complex units (≥200 tool calls) that never created any todo → inject "break down todos first" (with granularity rules); small tasks exempt.
 - **Verification duty**: format-valid completions → inject "spawn a fresh reviewer subagent" for semantic verification by the subagent family of LLMs.
@@ -83,6 +83,7 @@ Common deviations are auto-normalized: evidence as single object, string JSON, m
 - Same-text dedup: identical injections are not repeated
 - Interaction silence: no injection within 2 minutes of the latest user message (never interrupt a live conversation)
 - Idempotent injection: identical promptGuidelines line is not appended twice
+- Block-storm suppression: consecutive identical blocks per task are counted; from the 2nd on, the reason is prefixed with `[#N same-call blocks]` + escape hatch (fix evidence & retry / set status back to `pending`); any non-blocked update resets the counter
 
 ## Configuration (env vars)
 
@@ -98,7 +99,7 @@ The verification-duty switch (SEMANTIC_CHECK) is hard-coded (edit source to chan
 ## Tests
 
 ```bash
-npm test    # demo self-check (60 assertions) + mock E2E (26 scenarios, 58 assertions, no model needed)
+npm test    # demo self-check (60 assertions) + mock E2E (27 scenarios, 62 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.
