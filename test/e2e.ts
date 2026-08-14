@@ -740,13 +740,15 @@ function toolResult(name: string, details: unknown) {
 		kind: "runnable",
 		evidence: [{ type: "cmd", cmd: "echo", exit: 0 }],
 	};
-	const ret = await m.fire(
-		"tool_call",
-		{
-			toolName: "todo",
-			input: { action: "update", id: 1, status: "completed", metadata: { evidence } },
-		} as never,
-	);
+	const ret = await m.fire("tool_call", {
+		toolName: "todo",
+		input: {
+			action: "update",
+			id: 1,
+			status: "completed",
+			metadata: { evidence },
+		},
+	} as never);
 	check("S23 evidence 放行", ret, undefined);
 	const branch = [
 		userMsg("做任务"),
@@ -786,7 +788,11 @@ function toolResult(name: string, details: unknown) {
 	} finally {
 		Date.now = realNow;
 	}
-	check("S24 无停滞报告", m.sent.some((t) => t.includes("重新审视")), false);
+	check(
+		"S24 无停滞报告",
+		m.sent.some((t) => t.includes("重新审视")),
+		false,
+	);
 	check("S24 无任何注入", m.sent.length, 0);
 }
 
@@ -841,31 +847,55 @@ function toolResult(name: string, details: unknown) {
 	const m = mockPi();
 	todoneExtension(m.pi as never);
 	const noEvidence = { action: "update", id: 1, status: "completed" };
-	const r1 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+	const r1 = (await m.fire("tool_call", {
+		toolName: "todo",
+		input: noEvidence,
+	} as never)) as {
 		block?: boolean;
 		reason?: string;
 	};
 	check("S27 第 1 次 block", r1.block, true);
-	check("S27 第 1 次无风暴提示", String(r1.reason).includes("第2次拦截"), false);
-	const r2 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+	check(
+		"S27 第 1 次无风暴提示",
+		String(r1.reason).includes("第2次拦截"),
+		false,
+	);
+	const r2 = (await m.fire("tool_call", {
+		toolName: "todo",
+		input: noEvidence,
+	} as never)) as {
 		block?: boolean;
 		reason?: string;
 	};
 	check("S27 第 2 次仍 block", r2.block, true);
-	check("S27 第 2 次附风暴提示", String(r2.reason).includes("第2次拦截同一调用"), true);
+	check(
+		"S27 第 2 次附风暴提示",
+		String(r2.reason).includes("第2次拦截同一调用"),
+		true,
+	);
 	check("S27 提示含逃生口", String(r2.reason).includes("标回 pending"), true);
-	const r3 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+	const r3 = (await m.fire("tool_call", {
+		toolName: "todo",
+		input: noEvidence,
+	} as never)) as {
 		block?: boolean;
 		reason?: string;
 	};
-	check("S27 第 3 次计数递增", String(r3.reason).includes("第3次拦截同一调用"), true);
-	// 非 block 的状态变更 → 计数复位
-	const ok = await m.fire(
-		"tool_call",
-		{ toolName: "todo", input: { action: "update", id: 1, status: "pending" } } as never,
+	check(
+		"S27 第 3 次计数递增",
+		String(r3.reason).includes("第3次拦截同一调用"),
+		true,
 	);
+	// 非 block 的状态变更 → 计数复位
+	const ok = await m.fire("tool_call", {
+		toolName: "todo",
+		input: { action: "update", id: 1, status: "pending" },
+	} as never);
 	check("S27 pending 回退放行", (ok as { block?: boolean })?.block, undefined);
-	const r4 = (await m.fire("tool_call", { toolName: "todo", input: noEvidence } as never)) as {
+	const r4 = (await m.fire("tool_call", {
+		toolName: "todo",
+		input: noEvidence,
+	} as never)) as {
 		block?: boolean;
 		reason?: string;
 	};
