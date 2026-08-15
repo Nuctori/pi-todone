@@ -3,13 +3,26 @@
  * 无模型、无网络依赖，CI 可跑。运行：node --experimental-strip-types test/e2e.ts
  * 覆盖：格式闸 block/放行/归一化、证明点注入、创建义务注入、L1 幂等。
  */
-// 场景按默认配置设计（S4 创建阈值 200 / S13 停滞 3 轮 / S25/S33/S34 退避+静默窗口）——
+// 场景按默认配置设计（S4 创建阈值 200 / S13 停滞 3 轮 / S25/S33/S34 退避+静默窗口，见 index.ts CFG）——
 // 固定全部默认值防外部环境变量破坏锚定。
 // 必须在动态 import 之前：模块级 CFG 在 import 时读取 env（ESM import hoisting 使静态 import 无法前置）。
+// 进程退出前恢复原值（防同进程后续消费者被静默污染）。
+const savedEnv = {
+	PI_TODONE_COOLDOWN_BASE_MS: process.env.PI_TODONE_COOLDOWN_BASE_MS,
+	PI_TODONE_QUIET_AFTER_MS: process.env.PI_TODONE_QUIET_AFTER_MS,
+	PI_TODONE_STALL_THRESHOLD: process.env.PI_TODONE_STALL_THRESHOLD,
+	PI_TODONE_CREATE_THRESHOLD: process.env.PI_TODONE_CREATE_THRESHOLD,
+};
 delete process.env.PI_TODONE_COOLDOWN_BASE_MS;
 delete process.env.PI_TODONE_QUIET_AFTER_MS;
 delete process.env.PI_TODONE_STALL_THRESHOLD;
 delete process.env.PI_TODONE_CREATE_THRESHOLD;
+process.on("exit", () => {
+	for (const [k, v] of Object.entries(savedEnv)) {
+		if (v === undefined) delete process.env[k];
+		else process.env[k] = v;
+	}
+});
 const { default: todoneExtension } = await import("../src/index.ts");
 export {}; // 顶层 await 需要模块上下文（node strip-types 按 package.json type:module 运行）
 
