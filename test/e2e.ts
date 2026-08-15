@@ -1278,7 +1278,6 @@ function toolResult(name: string, details: unknown) {
 	];
 	await m.fire("agent_start", {} as never);
 	await m.fire("agent_settled", {} as never, turnCtx(branch3));
-	await m.fire("agent_settled", {} as never, turnCtx(branch3));
 	check("S32 全完成后不强制", m.sent.length, 2);
 }
 
