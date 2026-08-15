@@ -104,7 +104,7 @@ With unfinished todos the agent cannot just wrap up: at `agent_settled` (the fin
 1. **Explain the blocker** (which item is stuck, why, next step) and settle — the legitimate exit; one explanation is honored
 2. **Finish the remaining items** and settle afterwards
 
-Anti-loop: one notice (`settledForced`) is enough; reset on progress (unfinished count change) or user intervention. Unlike ⑤ proof-point (soft in-round hint), ⑦ fires at the settle point and bypasses the "already injected this round" guard (the ultimatum applies even if turn_end hinted).
+Anti-loop: one notice (`settledForced`) is enough; reset on progress (unfinished count change) or user intervention. Unlike ⑤ proof-point (soft in-round hint), ⑦ fires at the settle point and bypasses the "already injected this round" guard (the ultimatum applies even if turn_end hinted). ⑦ does not use the exponential backoff (the ultimatum is the last resort at the settle point, outside ⑤/⑥ scheduling); same-text dedup still applies (the same settle content is not pushed twice).
 
 ## Loop protection
 
@@ -129,7 +129,7 @@ The verification-duty switch (SEMANTIC_CHECK) is hard-coded (edit source to chan
 ## Tests
 
 ```bash
-npm test    # demo self-check (84 assertions) + mock E2E (32 scenarios, 97 assertions, no model needed)
+npm test    # demo self-check (84 assertions) + mock E2E (34 scenarios, 102 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.

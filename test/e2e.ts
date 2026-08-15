@@ -1278,7 +1278,80 @@ function toolResult(name: string, details: unknown) {
 	];
 	await m.fire("agent_start", {} as never);
 	await m.fire("agent_settled", {} as never, turnCtx(branch3));
+	await m.fire("agent_settled", {} as never, turnCtx(branch3));
 	check("S32 全完成后不强制", m.sent.length, 2);
+}
+
+// ── 场景 33：⑦ 交互静默（用户在交互时 settled 不顶回；v0.6.0）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const realNow = Date.now;
+	let fakeNow = realNow();
+	Date.now = () => fakeNow;
+	try {
+		const branch = [
+			userMsg("做任务", new Date(fakeNow - 10_000).toISOString()),
+			toolCall("todo", { action: "create", subject: "任务A" }),
+			toolResult("todo", {
+				action: "create",
+				params: {},
+				tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+				nextId: 2,
+			}),
+		];
+		await m.fire("agent_settled", {} as never, turnCtx(branch));
+		check("S33 静默窗口内 settled 不顶回", m.sent.length, 0);
+		fakeNow += 200_000; // 越过 120s 静默窗口
+		await m.fire("agent_settled", {} as never, turnCtx(branch));
+		check("S33 窗口过后顶回", m.sent.length, 1);
+		check("S33 文本含禁止收尾", m.sent[0]?.includes("禁止直接收尾"), true);
+	} finally {
+		Date.now = realNow;
+	}
+}
+
+// ── 场景 34：⑦ 用户介入复位（新消息后收尾再强制；v0.6.0）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const realNow = Date.now;
+	let fakeNow = realNow();
+	Date.now = () => fakeNow;
+	try {
+		const branch = [
+			userMsg("做任务", new Date(fakeNow - 300_000).toISOString()),
+			toolCall("todo", { action: "create", subject: "任务A" }),
+			toolResult("todo", {
+				action: "create",
+				params: {},
+				tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+				nextId: 2,
+			}),
+		];
+		await m.fire("agent_settled", {} as never, turnCtx(branch));
+		check("S34 首次强制", m.sent.length, 1);
+		// 用户介入（新消息）→ 越过退避+静默窗口 → 复位生效 → 收尾再强制
+		const branch2 = [
+			...branch,
+			userMsg("继续", new Date(fakeNow + 10_000).toISOString()),
+		];
+		fakeNow += 200_000;
+		await m.fire("agent_start", {} as never);
+		await m.fire(
+			"turn_end",
+			{ turnIndex: 2, message: {}, toolResults: [] } as never,
+			turnCtx(branch2),
+		);
+		await m.fire("agent_settled", {} as never, turnCtx(branch2));
+		check(
+			"S34 用户介入后收尾再强制",
+			m.sent[m.sent.length - 1]?.includes("禁止直接收尾"),
+			true,
+		);
+	} finally {
+		Date.now = realNow;
+	}
 }
 
 if (failed > 0) {
