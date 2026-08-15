@@ -472,20 +472,39 @@ function toolResult(name: string, details: unknown) {
 	check("S13 文本含重新审视", m.sent[1]?.includes("重新审视"), true);
 }
 
-// ── 场景 14：agent_settled 兜底（单轮回合未注入时补一次，走 followUp 不 triggerTurn）──
+// ── 场景 14：agent_settled 兜底（无未完成 todo 时补一次，走 followUp 不 triggerTurn；v0.6.0 起 ⑦ 只拦未完成）──
 {
 	const m = mockPi();
 	todoneExtension(m.pi as never);
 	const branch = [
 		userMsg("做任务"),
-		toolCall("todo", { action: "create", subject: "任务A" }),
 		toolResult("todo", {
-			action: "create",
+			action: "update",
 			params: {},
-			tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+			tasks: [{ id: 1, subject: "任务A", status: "completed" }],
 			nextId: 2,
 		}),
 	];
+	// 先放行完成项进 pendingVerify（⑥ 验证义务触发条件；全完成则 ⑦ 不拦）
+	const ret = await m.fire(
+		"tool_call",
+		{
+			toolName: "todo",
+			input: {
+				action: "update",
+				id: 1,
+				status: "completed",
+				metadata: {
+					evidence: {
+						kind: "runnable",
+						evidence: [{ type: "cmd", cmd: "echo", exit: 0 }],
+					},
+				},
+			},
+		} as never,
+		turnCtx(branch),
+	);
+	check("S14 放行", ret, undefined);
 	await m.fire("agent_start", {} as never);
 	await m.fire("agent_settled", {} as never, turnCtx(branch));
 	check("S14 settled 兜底注入", m.sent.length, 1);
@@ -493,7 +512,7 @@ function toolResult(name: string, details: unknown) {
 	check("S14 兜底不 triggerTurn", m.sentTriggerTurn[0], false);
 }
 
-// ── 场景 15：已注入的回合 settled 不重复兜底 ──
+// ── 场景 15：settled 最后通牒（turn_end 已提示，收尾仍 ⑦ 强制；已通知后静默；v0.6.0）──
 {
 	const m = mockPi();
 	todoneExtension(m.pi as never);
@@ -510,7 +529,10 @@ function toolResult(name: string, details: unknown) {
 	await fireRound(m, branch, 1);
 	check("S15 turn_end 已注入", m.sent.length, 1);
 	await m.fire("agent_settled", {} as never, turnCtx(branch));
-	check("S15 settled 不重复注入", m.sent.length, 1);
+	check("S15 settled 最后通牒", m.sent.length, 2);
+	check("S15 通牒文本含禁止收尾", m.sent[1]?.includes("禁止直接收尾"), true);
+	await m.fire("agent_settled", {} as never, turnCtx(branch));
+	check("S15 已通知后静默", m.sent.length, 2);
 }
 
 // ── 场景 16：注入失败不提交状态，下轮重试（v0.4.2：效果成功才提交去重/退避）──
@@ -1198,6 +1220,65 @@ function toolResult(name: string, details: unknown) {
 	check("S31 同时点名 gate 与普通", m.sent[0]?.includes("任务 #1, 2"), true);
 	check("S31 gated 附硬门禁强调", m.sent[0]?.includes("其中 #1"), true);
 	check("S31 普通项被点名覆盖", m.sent[0]?.includes("其余完成项"), true);
+}
+
+// ── 场景 32：⑦ 收尾强制（agent_settled 时 todo 未完成 → 顶回强制交代；v0.6.0）──
+{
+	const m = mockPi();
+	todoneExtension(m.pi as never);
+	const branch = [
+		userMsg("做任务"),
+		toolCall("todo", { action: "create", subject: "任务A" }),
+		toolResult("todo", {
+			action: "create",
+			params: {},
+			tasks: [{ id: 1, subject: "任务A", status: "pending" }],
+			nextId: 2,
+		}),
+	];
+	// 收尾（settled）时 todo 未完成 → 最后通牒强制交代
+	await m.fire("agent_settled", {} as never, turnCtx(branch));
+	check("S32 收尾强制注入", m.sent.length, 1);
+	check("S32 文本含禁止直接收尾", m.sent[0]?.includes("禁止直接收尾"), true);
+	check("S32 走 followUp", m.sentDeliverAs[0], "followUp");
+	check("S32 triggerTurn 强制新回合", m.sentTriggerTurn[0], true);
+	// 同回合再收尾：已强制交代过一次 → 静默放行
+	await m.fire("agent_settled", {} as never, turnCtx(branch));
+	check("S32 已通知过静默", m.sent.length, 1);
+	// 有进展（pending→in_progress 计数变化）→ 复位 → 收尾再强制
+	const branch2 = [
+		...branch,
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [
+				{ id: 1, subject: "任务A", status: "in_progress" },
+				{ id: 2, subject: "任务B", status: "pending" },
+			],
+			nextId: 2,
+		}),
+	];
+	await m.fire("agent_start", {} as never);
+	await m.fire(
+		"turn_end",
+		{ turnIndex: 2, message: {}, toolResults: [] } as never,
+		turnCtx(branch2),
+	);
+	await m.fire("agent_settled", {} as never, turnCtx(branch2));
+	check("S32 进展后复位再强制", m.sent.length, 2);
+	// 全部完成 → 收尾不强制（⑦ 负例）
+	const branch3 = [
+		...branch,
+		toolResult("todo", {
+			action: "update",
+			params: {},
+			tasks: [{ id: 1, subject: "任务A", status: "completed" }],
+			nextId: 2,
+		}),
+	];
+	await m.fire("agent_start", {} as never);
+	await m.fire("agent_settled", {} as never, turnCtx(branch3));
+	check("S32 全完成后不强制", m.sent.length, 2);
 }
 
 if (failed > 0) {

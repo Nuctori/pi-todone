@@ -219,7 +219,7 @@ const EVIDENCE_GUIDE = `todo 标 completed 必须附 metadata.evidence（JSON）
 
 /** L1 常驻义务摘要：编译期常量，严禁任何动态内容（字节变化会破 system prompt 缓存前缀）。 */
 const TODO_DUTY_LINE =
-	"Todo 义务（pi-todone）：复杂任务（多文件/3+ 步骤/长任务）开始前先拆 todo，每项是一个可独立验证的结果（≤ 一句话）；小任务（单文件小改/问答）无需列。标 todo completed 必须附 metadata.evidence（state→file 证据 / runnable→cmd 证据 / effect 留人工验收）；节点可声明 metadata.gate 硬门禁（test→需 cmd 证据 exit 0 / audit→需交叉审计 review 证据），声明即义务；树形任务：父 completed 前子项必须全 completed；详见 pi-todone skill。";
+	"Todo 义务（pi-todone）：复杂任务（多文件/3+ 步骤/长任务）开始前先拆 todo，每项是一个可独立验证的结果（≤ 一句话）；小任务（单文件小改/问答）无需列。标 todo completed 必须附 metadata.evidence（state→file 证据 / runnable→cmd 证据 / effect 留人工验收）；节点可声明 metadata.gate 硬门禁（test→需 cmd 证据 exit 0 / audit→需交叉审计 review 证据），声明即义务；树形任务：父 completed 前子项必须全 completed；todo 未全部完成时禁止直接收尾（须说明卡点或继续）；详见 pi-todone skill。";
 
 /** 扫描会话分支，返回最新 todo 工具结果快照（todo-enforcer 同款模式，纯读）。 */
 export function scanTodoSnapshot(
@@ -447,6 +447,7 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 	let currentRound = 0; // 回合号：agent_start 递增（回合级守卫用）
 	let lastInjectedRound = -1; // 已注入的回合号（同回合多轮 turn_end 只注入一次）
 	let lastStallRound = -1; // 停滞计数已更新的回合号（同回合多轮只计一次）
+	let settledForced = false; // ⑦ 收尾强制已通知：交代过一次即放行（防死循环）；进展/用户介入复位
 	// block-storm 抑制：同一任务同一原因连续 block 计数（模型反复重试同一违规烧工具预算——审计见 dag-core 19 连 block）
 	const blockStorm = new Map<number, { key: string; count: number }>();
 	function escalateBlock(
@@ -468,20 +469,22 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 
 	/** 注入一条建议（customType 标记：静默/统计排除自身，防自反馈循环）。
 	 * deliverAs: steer=回合内投递（下次 LLM 调用前，agent 本回合消化，不产生新回合）；
-	 * followUp=回合结束投递（agent_settled 兜底用）。均不 triggerTurn：避免"汇报后接短工作"。
+	 * followUp=回合结束投递（agent_settled 兜底用）。triggerTurn=true 强制新回合（⑦ 收尾强制用），
+	 * 其余均 false：避免"汇报后接短工作"。
 	 * 返回 true=已投递（或同文本已提示过）；false=投递失败（去重/退避/streak 状态未提交，
 	 * 调用方保留提示状态下轮重试——状态提交后置于效果成功之后，失败不污染防循环状态）。 */
 	async function inject(
 		text: string,
 		now: number,
 		deliverAs: "steer" | "followUp" = "steer",
+		triggerTurn = false,
 	): Promise<boolean> {
 		if (text === lastInjectionText) return true; // 同文本去重：已提示过，视为已投递
 		lastInjectedRound = currentRound; // 先占回合：并发 turn_end/agent_settled 不双发
 		try {
 			await pi.sendMessage(
 				{ customType: SELF_TYPE, content: text, display: true },
-				{ deliverAs, triggerTurn: false },
+				{ deliverAs, triggerTurn },
 			);
 		} catch (err) {
 			// 仅释放自身回合的占位：非顺序派发下回合 N 的失败不得误释放回合 N+1 的占位（防 settled 二次注入）
@@ -642,11 +645,13 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 				stagnantRounds = 0;
 				lastIncompleteCount = incomplete.length;
 				stalledNotified = false;
+				settledForced = false; // 有进展：收尾强制复位
 			}
 		} else if (incomplete.length === 0) {
 			stagnantRounds = 0;
 			lastIncompleteCount = incomplete.length;
 			stalledNotified = false;
+			settledForced = false; // 全部完成：收尾强制复位
 		}
 
 		// 退避 + 交互静默
@@ -658,7 +663,10 @@ export default function todoneExtension(pi: ExtensionAPI): void {
 
 		const lastUserAt = lastUserMessageAt(branch);
 		if (now - lastUserAt < CFG.quietAfterMs) return; // 用户在交互，不打扰
-		if (lastUserAt > lastInjectionAt) stalledNotified = false; // 用户介入，解除静默
+		if (lastUserAt > lastInjectionAt) {
+			stalledNotified = false; // 用户介入，解除静默
+			settledForced = false; // 用户介入：收尾强制复位
+		}
 		if (stalledNotified && incomplete.length === lastIncompleteCount) return; // 已通知卡点：静默等用户/进展
 
 		const stats = unitToolStats(branch);
@@ -804,6 +812,37 @@ subagent 独立验证（只读检查文件/测试，对照 evidence 声称），
 		}
 	}
 
+	/** ⑦ 收尾强制（agent_settled 最后通牒）：todo 未全部完成禁止直接收尾。
+	 * 软强制：注入 triggerTurn:true 顶回一轮，要求说明卡点或继续完成；
+	 * 通知过一次（settledForced）即静默放行（交代过就算数，防死循环）；进展/用户介入复位。 */
+	async function enforceSettled(branch: SessionEntry[]): Promise<void> {
+		const snapshot = scanTodoSnapshot(branch);
+		const tasks = snapshot
+			? snapshot.tasks.filter((t) => t && t.status !== "deleted")
+			: [];
+		const incomplete = tasks.filter(
+			(t) => t && (t.status === "pending" || t.status === "in_progress"),
+		);
+		if (incomplete.length === 0) return;
+		if (settledForced) return; // 已强制交代过一次：放行
+		const now = Date.now();
+		if (now - lastUserMessageAt(branch) < CFG.quietAfterMs) return; // 用户在交互，不顶
+		const list = incomplete
+			.slice(0, 5)
+			.map((t) => `#${t.id} ${t.subject}`)
+			.join("\n");
+		if (
+			await inject(
+				`${PKG}: todo 未全部完成（还剩 ${incomplete.length} 项），禁止直接收尾：\n${list}\n二选一：① 说明卡点（哪项卡住、原因、下一步）后收尾 ② 继续完成剩余项后再收尾。`,
+				now,
+				"followUp",
+				true,
+			)
+		) {
+			settledForced = true;
+		}
+	}
+
 	pi.on("turn_end", async (_event, ctx) => {
 		try {
 			if (lastInjectedRound === currentRound) return; // 本回合已注入
@@ -818,9 +857,10 @@ subagent 独立验证（只读检查文件/测试，对照 evidence 声称），
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		try {
-			if (lastInjectedRound === currentRound) return; // 回合内已注入，不重复
 			const branch = ctx.sessionManager?.getBranch?.();
 			if (!Array.isArray(branch)) return;
+			await enforceSettled(branch); // ⑦ 收尾强制：优先于常规注入（turn_end 已提示过也最后通牒）
+			if (lastInjectedRound === currentRound) return; // 回合内已注入，不重复
 			await judgeAndInject(branch, Date.now(), "followUp");
 		} catch (err) {
 			console.error(`[${PKG}] agent_settled 建议器异常（已忽略）:`, err);

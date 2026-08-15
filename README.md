@@ -9,6 +9,7 @@ todo 状态机守护：完成义务闸 + 树完整性 + 证明点协议 + 并行
 - **并行建议**：依赖未完成就开工 → 确认提示；subagent/长命令等待期间 → 提示推进无依赖任务
 - **验证义务**：格式合规的完成项 → 注入"请 spawn fresh reviewer 独立验证"，由 subagent 系 LLM 做语义判断
 - **硬门禁（gate 原语）**：create 时可声明 `metadata.gate`（`{"test":true}` / `"audit"` / `["test","audit"]`）；test → 完成证据必须含 cmd 且 exit 显式为 0；audit → 必须含 review 交叉审计证据（agent+path）；不满足 → block。声明即义务，防"忘了这个节点要特殊证明"（拦忘记/格式错，不拦谎报——真实性由验证义务的 fresh reviewer 复核）
+- **收尾强制（⑦）**：agent 收尾时（agent_settled）todo 未全部完成 → 顶回一轮强制交代（说明卡点或继续完成，`triggerTurn` 强制新回合）；交代过一次即放行（防死循环），进展/用户介入后复位
 
 插件只做**确定性校验**（零 LLM 成本、永不幻觉）。语义验证 → 独立 subagent（防共谋）。
 
@@ -98,6 +99,15 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 - gate 与 `blockedBy` 正交：blockedBy 管顺序（依赖就绪），gate 管完成条件（证明义务）——组合即 todo 里的工作流
 - 防伪边界：gate 是机械校验，拦"忘记附证据/格式错"，拦不住"谎报 exit 0"——真实性靠验证义务的独立复核兜底（插件从不验证真实性，见设计哲学）
 
+## 收尾强制（⑦）
+
+todo 未全部完成时，agent 不能直接收尾：agent_settled（Pi 不再自动继续的最终收尾点）时仍有未完成项 → 注入最后通牒 + `triggerTurn` 顶回一轮，二选一：
+
+1. **说明卡点**（哪项卡住、原因、下一步）后收尾——合法出口，交代过即放行
+2. **继续完成剩余项**后再收尾
+
+防循环：通知过一次（`settledForced`）即静默放行，不反复顶；进展（未完成计数变化）或用户介入后复位。区别于 ⑤ 证明点（回合内软提示）：⑦ 是收尾点强制，绕开"本回合已注入"守卫（turn_end 提示过也最后通牒）。
+
 ## 防循环
 
 - 停滞检测：todo 计数连续 N 轮不变（默认 3）→ 注入重新审视树结构（**终态通知**，之后静默等用户介入或进展，不重复催促）
@@ -122,7 +132,7 @@ todo 标 completed 时在 `metadata.evidence` 提交：
 ## 测试
 
 ```bash
-npm test    # demo 自检（84 断言）+ mock E2E（31 场景 87 断言，无模型依赖）
+npm test    # demo 自检（84 断言）+ mock E2E（32 场景 97 断言，无模型依赖）
 ```
 
 CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。

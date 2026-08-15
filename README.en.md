@@ -7,6 +7,7 @@ Todo completion duty gate + proof-point protocol. Minimal intervention against A
 - **Creation duty**: complex units (≥200 tool calls) that never created any todo → inject "break down todos first" (with granularity rules); small tasks exempt.
 - **Verification duty**: format-valid completions → inject "spawn a fresh reviewer subagent" for semantic verification by the subagent family of LLMs.
 - **Hard gate (gate primitive)**: declare `metadata.gate` at create time (`{"test":true}` / `"audit"` / `["test","audit"]`); `test` → completion evidence must include a cmd entry with explicit `exit: 0`; `audit` → must include a review evidence entry (agent+path); otherwise → **blocked**. Declared is obliged — prevents "forgetting this node needs special proof" (stops forgetting/format errors, not lying — truthfulness is re-checked by the verification-duty fresh reviewer)
+- **Settled ultimatum (⑦)**: when the agent settles with unfinished todos → push back one round with `triggerTurn` and demand: explain the blocker (which item, why, next step) and settle, or finish the remaining items. One notice is enough (anti-loop); reset on progress or user intervention
 
 The plugin performs **deterministic format validation only** (zero LLM cost, never hallucinates). Semantic verification → independent subagents (collusion-resistant).
 
@@ -96,6 +97,15 @@ When a node needs a **hard proof duty** (tests must pass / cross-audit required)
 - Gate is orthogonal to `blockedBy`: blockedBy governs order (dependency readiness), gate governs completion conditions (proof duty) — together they are the workflow inside todos
 - Anti-forgery boundary: the gate is a mechanical check — it stops "forgot the evidence / format errors", not "lied about exit 0" — truthfulness is backed by the verification-duty independent review (the plugin never verifies truthfulness, see Design Philosophy)
 
+## Settled ultimatum (⑦)
+
+With unfinished todos the agent cannot just wrap up: at `agent_settled` (the final point where Pi stops auto-continuing), if any todo is still pending/in_progress → inject an ultimatum with `triggerTurn` to push back one round, choosing one of:
+
+1. **Explain the blocker** (which item is stuck, why, next step) and settle — the legitimate exit; one explanation is honored
+2. **Finish the remaining items** and settle afterwards
+
+Anti-loop: one notice (`settledForced`) is enough; reset on progress (unfinished count change) or user intervention. Unlike ⑤ proof-point (soft in-round hint), ⑦ fires at the settle point and bypasses the "already injected this round" guard (the ultimatum applies even if turn_end hinted).
+
 ## Loop protection
 
 - Stagnation detection: todo count unchanged for N rounds (default 3) → inject re-examination (**terminal notice**; then silent until user intervention or progress — no repeated nagging)
@@ -119,7 +129,7 @@ The verification-duty switch (SEMANTIC_CHECK) is hard-coded (edit source to chan
 ## Tests
 
 ```bash
-npm test    # demo self-check (84 assertions) + mock E2E (31 scenarios, 87 assertions, no model needed)
+npm test    # demo self-check (84 assertions) + mock E2E (32 scenarios, 97 assertions, no model needed)
 ```
 
 CI (GitHub Actions): `test` job always runs; `real-e2e` job requires repo variable `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`.
