@@ -1360,7 +1360,7 @@ function toolResult(name: string, details: unknown) {
 		await m.fire("agent_settled", {} as never, turnCtx(branch2));
 		check(
 			"S34 用户介入后收尾再强制",
-			m.sent[m.sent.length - 1]?.includes("禁止直接收尾"),
+			m.sent.length === 3 && m.sent[2]?.includes("禁止直接收尾"),
 			true,
 		);
 	} finally {
