@@ -3,10 +3,13 @@
  * 无模型、无网络依赖，CI 可跑。运行：node --experimental-strip-types test/e2e.ts
  * 覆盖：格式闸 block/放行/归一化、证明点注入、创建义务注入、L1 幂等。
  */
-// 时间轴场景（S13/S25/S33/S34）按默认退避/静默窗口设计——固定默认值防外部环境变量破坏锚定。
+// 场景按默认配置设计（S4 创建阈值 200 / S13 停滞 3 轮 / S25/S33/S34 退避+静默窗口）——
+// 固定全部默认值防外部环境变量破坏锚定。
 // 必须在动态 import 之前：模块级 CFG 在 import 时读取 env（ESM import hoisting 使静态 import 无法前置）。
 delete process.env.PI_TODONE_COOLDOWN_BASE_MS;
 delete process.env.PI_TODONE_QUIET_AFTER_MS;
+delete process.env.PI_TODONE_STALL_THRESHOLD;
+delete process.env.PI_TODONE_CREATE_THRESHOLD;
 const { default: todoneExtension } = await import("../src/index.ts");
 export {}; // 顶层 await 需要模块上下文（node strip-types 按 package.json type:module 运行）
 
