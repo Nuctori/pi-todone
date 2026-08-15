@@ -132,7 +132,7 @@ todo 未全部完成时，agent 不能直接收尾：agent_settled（Pi 不再�
 ## 测试
 
 ```bash
-npm test    # demo 自检（84 断言）+ mock E2E（34 场景 102 断言，无模型依赖）
+npm test    # demo 自检（84 断言）+ mock E2E（34 场景 103 断言，无模型依赖）
 ```
 
 CI（GitHub Actions）：test job 必跑；real-e2e job 需仓库变量 `RUN_REAL_E2E=true` + secret `PI_E2E_API_KEY`。

@@ -1310,7 +1310,7 @@ function toolResult(name: string, details: unknown) {
 	}
 }
 
-// ── 场景 34：⑦ 用户介入复位（新消息后收尾再强制；v0.6.0）──
+// ── 场景 34：⑦ 用户介入复位（新消息后收尾再强制；唯一复位路径=用户介入分支）──
 {
 	const m = mockPi();
 	todoneExtension(m.pi as never);
@@ -1319,7 +1319,7 @@ function toolResult(name: string, details: unknown) {
 	Date.now = () => fakeNow;
 	try {
 		const branch = [
-			userMsg("做任务", new Date(fakeNow - 300_000).toISOString()),
+			userMsg("做任务", new Date(fakeNow - 10_000).toISOString()),
 			toolCall("todo", { action: "create", subject: "任务A" }),
 			toolResult("todo", {
 				action: "create",
@@ -1328,9 +1328,19 @@ function toolResult(name: string, details: unknown) {
 				nextId: 2,
 			}),
 		];
+		// 先初始化停滞计数（turn_end 在静默窗口内：计数 -1→1 但 quiet 拦 ⑤ 不注入）
+		await m.fire("agent_start", {} as never);
+		await m.fire(
+			"turn_end",
+			{ turnIndex: 1, message: {}, toolResults: [] } as never,
+			turnCtx(branch),
+		);
+		check("S34 静默窗口内 turn_end 不注入", m.sent.length, 0);
+		fakeNow += 200_000; // 越过 120s 静默窗口
 		await m.fire("agent_settled", {} as never, turnCtx(branch));
 		check("S34 首次强制", m.sent.length, 1);
-		// 用户介入（新消息）→ 越过退避+静默窗口 → 复位生效 → 收尾再强制
+		// 用户介入（新消息）→ 越过退避+静默窗口；计数不变 → 停滞分支不复位，
+		// 唯一复位路径 = 用户介入分支（lastUserAt > lastInjectionAt）→ 收尾再强制
 		const branch2 = [
 			...branch,
 			userMsg("继续", new Date(fakeNow + 10_000).toISOString()),
